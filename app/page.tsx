@@ -389,6 +389,7 @@ type ReviewHistoryResponse = {
 
 type WorkflowOverview = {
   inference: { model: string; promptVersion: string };
+  freeze_snapshot: boolean;
   reviewers: Array<{
     reviewerId: number;
     displayName: string;
@@ -398,18 +399,18 @@ type WorkflowOverview = {
     secondReviews: number;
   }>;
   batches: Array<{
-    batchId: number;
-    name: string;
-    requestedSize: number;
-    selectedSize: number;
-    doubleReviewPercent: number;
-    status: string;
-    createdAt: string;
-    creatorName: string | null;
-    resolvedItems: number;
-    conflictItems: number;
-    awaitingSecond: number;
-  }>;
+      batchId: number;
+      name: string;
+      requestedSize: number;
+      selectedSize: number;
+      target_reviews: number;
+      status: string;
+      createdAt: string;
+      creatorName: string | null;
+      resolvedItems: number;
+      conflictItems: number;
+      awaiting_reviews: number;
+    }>;
   conflicts: Array<{
     analysisId: number;
     platform: string;
@@ -779,25 +780,29 @@ export default function Home() {
         params.set("gemmaLabel", activeFilters.gemmaLabel);
       }
       const response = await fetch(`/api/reviews/next?${params.toString()}`, {
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      const data = await response.json();
-      if (requestSequence !== requestSequenceRef.current) return;
-      if (response.status === 401) {
-        setReviewer(null);
-        return;
-      }
-      if (!response.ok) {
-        throw new Error(data.error || "Falha ao buscar o próximo texto.");
-      }
-      setItem(data.item);
-      setExpandedText(false);
-      setCategories(data.categories || []);
-      if (data.item) {
-        setFinalLabel(data.item.gemmaLabel);
-        setSelectedTypes(data.item.hateTypes);
-      }
+              signal: controller.signal,
+              cache: "no-store",
+            });
+            const data = await response.json();
+            if (requestSequence !== requestSequenceRef.current) return;
+            if (response.status === 401) {
+              setReviewer(null);
+              return;
+            }
+            if (!response.ok) {
+              throw new Error(data.error || "Falha ao buscar o próximo texto.");
+            }
+            setItem(data.item);
+            setExpandedText(false);
+            setCategories(data.categories || []);
+            if (data.item) {
+              setFinalLabel(data.item.gemmaLabel);
+              setSelectedTypes(data.item.hateTypes);
+            }
+            // Handle frozen state
+            if (data.frozen && !data.item) {
+              setError(data.message || "No momento não há avaliações a se fazer.");
+            }
     } catch (cause) {
       if (controller.signal.aborted) return;
       if (requestSequence === requestSequenceRef.current) {
@@ -1613,30 +1618,34 @@ function NliWorkspace({
   }, []);
 
   const loadNext = useCallback(
-    async (requestedPlatform = platform) => {
-      setLoading(true);
-      setError("");
-      try {
-        const params = new URLSearchParams();
-        if (requestedPlatform) params.set("platform", requestedPlatform);
-        const response = await fetch(`/api/nli/next?${params.toString()}`);
-        const body = await response.json();
-        if (!response.ok) {
-          throw new Error(body.error || "Não foi possível carregar a fila NLI.");
+      async (requestedPlatform = platform) => {
+        setLoading(true);
+        setError("");
+        try {
+          const params = new URLSearchParams();
+          if (requestedPlatform) params.set("platform", requestedPlatform);
+          const response = await fetch(`/api/nli/next?${params.toString()}`);
+          const body = await response.json();
+          if (!response.ok) {
+            throw new Error(body.error || "Não foi possível carregar a fila NLI.");
+          }
+          setItem(body.item || null);
+          setStats(body.stats || null);
+          // Handle frozen state
+          if (body.frozen && !body.item) {
+            setError(body.message || "No momento não há avaliações a se fazer.");
+          }
+          resetForm();
+        } catch (cause) {
+          setError(
+            cause instanceof Error ? cause.message : "Falha ao carregar a fila NLI.",
+          );
+        } finally {
+          setLoading(false);
         }
-        setItem(body.item || null);
-        setStats(body.stats || null);
-        resetForm();
-      } catch (cause) {
-        setError(
-          cause instanceof Error ? cause.message : "Falha ao carregar a fila NLI.",
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [platform, resetForm],
-  );
+      },
+      [platform, resetForm],
+    );
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadNext(), 0);
@@ -2767,8 +2776,8 @@ function LabelingGuide({
 
 function AdminPanel({ close }: { close: () => void }) {
   const [activeTab, setActiveTab] = useState<
-    "metrics" | "data" | "nli" | "workflow" | "users"
-  >("metrics");
+    "workflow" | "metrics" | "data" | "nli" | "users"
+  >("workflow");
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState("");
@@ -2887,37 +2896,37 @@ function AdminPanel({ close }: { close: () => void }) {
           </header>
 
           <nav className="admin-tabs" aria-label="Seções administrativas">
-            <button
-              className={activeTab === "metrics" ? "active" : ""}
-              onClick={() => setActiveTab("metrics")}
-            >
-              <BarChart3 size={17} />Métricas
-            </button>
-            <button
-              className={activeTab === "data" ? "active" : ""}
-              onClick={() => setActiveTab("data")}
-            >
-              <Table2 size={17} />Dados do Gemma
-            </button>
-            <button
-              className={activeTab === "nli" ? "active" : ""}
-              onClick={() => setActiveTab("nli")}
-            >
-              <BrainCircuit size={17} />Visão NLI
-            </button>
-            <button
-              className={activeTab === "workflow" ? "active" : ""}
-              onClick={() => setActiveTab("workflow")}
-            >
-              <Layers3 size={17} />Fluxo do gold
-            </button>
-            <button
-              className={activeTab === "users" ? "active" : ""}
-              onClick={() => setActiveTab("users")}
-            >
-              <Users size={17} />Usuários
-            </button>
-          </nav>
+                      <button
+                        className={activeTab === "workflow" ? "active" : ""}
+                        onClick={() => setActiveTab("workflow")}
+                      >
+                        <Layers3 size={17} />Fluxo do gold
+                      </button>
+                      <button
+                        className={activeTab === "metrics" ? "active" : ""}
+                        onClick={() => setActiveTab("metrics")}
+                      >
+                        <BarChart3 size={17} />Métricas
+                      </button>
+                      <button
+                        className={activeTab === "data" ? "active" : ""}
+                        onClick={() => setActiveTab("data")}
+                      >
+                        <Table2 size={17} />Dados do Gemma
+                      </button>
+                      <button
+                        className={activeTab === "nli" ? "active" : ""}
+                        onClick={() => setActiveTab("nli")}
+                      >
+                        <BrainCircuit size={17} />Visão NLI
+                      </button>
+                      <button
+                        className={activeTab === "users" ? "active" : ""}
+                        onClick={() => setActiveTab("users")}
+                      >
+                        <Users size={17} />Usuários
+                      </button>
+                    </nav>
         </div>
 
         {activeTab === "metrics" ? (
@@ -3059,7 +3068,27 @@ function WorkflowAdminView({
     `Lote balanceado ${new Date().toLocaleDateString("pt-BR")}`,
   );
   const [batchSize, setBatchSize] = useState(500);
-  const [doublePercent, setDoublePercent] = useState(20);
+  const [targetReviews, setTargetReviews] = useState(2);
+
+  // CSV upload modal state
+  const [showCsvUpload, setShowCsvUpload] = useState(false);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
+  const [csvBatchName, setCsvBatchName] = useState(`Lote CSV ${new Date().toLocaleDateString("pt-BR")}`);
+  const [csvTargetReviews, setCsvTargetReviews] = useState(2);
+
+  // Combine batches modal state
+  const [showCombineBatches, setShowCombineBatches] = useState(false);
+  const [combineBatchesList, setCombineBatchesList] = useState<{batchId: number, name: string, size: number, targetReviews: number}[]>([]);
+  const [combineBatchIds, setCombineBatchIds] = useState<number[]>([]);
+  const [combineBatchName, setCombineBatchName] = useState(`Lote combinado ${new Date().toLocaleDateString("pt-BR")}`);
+  const [combineTargetReviews, setCombineTargetReviews] = useState(2);
+  const [combineLoading, setCombineLoading] = useState(false);
+
+  // Freeze modal state
+  const [showFreezeModal, setShowFreezeModal] = useState(false);
+  const [freezeReason, setFreezeReason] = useState("");
 
   const loadWorkflow = useCallback(async () => {
     setLoading(true);
@@ -3082,6 +3111,182 @@ function WorkflowAdminView({
     const timer = window.setTimeout(() => void loadWorkflow(), 0);
     return () => window.clearTimeout(timer);
   }, [loadWorkflow]);
+
+  // Load freeze status
+  const loadFreezeStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/admin/workflow?action=freeze_status");
+      const data = await response.json();
+      if (response.ok) {
+        return data.frozen;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }, []);
+
+  async function toggleFreeze(freeze: boolean) {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/workflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: freeze ? "freeze" : "unfreeze",
+          reason: freezeReason,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Não foi possível alterar o status de congelamento.");
+      }
+      setNotice(freeze ? "Avaliações congeladas." : "Avaliações descongeladas.");
+      setShowFreezeModal(false);
+      setFreezeReason("");
+      await loadWorkflow();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Falha ao alterar congelamento.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCsvFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setCsvFile(file);
+    setCsvHeaders([]);
+    setColumnMapping({});
+    
+    // Parse headers
+    const text = await file.text();
+        const lines = text.trim().split("\n");
+                if (lines.length > 0) {
+                  const headers = parseCsvLine(lines[0]);
+      setCsvHeaders(headers);
+      // Auto-map common columns
+      const mapping: Record<string, string> = {};
+      headers.forEach((h) => {
+        const lower = h.toLowerCase();
+        if (lower.includes("text") || lower.includes("conteúdo") || lower.includes("content")) {
+          mapping.textCol = h;
+        } else if (lower.includes("label") || lower.includes("rótulo") || lower.includes("class")) {
+          mapping.labelCol = h;
+        } else if (lower.includes("hate_type") || lower.includes("tipo") || lower.includes("category")) {
+          mapping.hateTypesCol = h;
+        } else if (lower.includes("platform") || lower.includes("rede") || lower.includes("source")) {
+          mapping.platformCol = h;
+        } else if (lower.includes("kind") || lower.includes("tipo") || lower.includes("post")) {
+          mapping.contentKindCol = h;
+        } else if (lower.includes("external_id") || lower.includes("id") || lower.includes("origem")) {
+          mapping.externalIdCol = h;
+        }
+      });
+      setColumnMapping(mapping);
+    }
+  }
+
+  async function createBatchFromCsv(event: FormEvent) {
+    event.preventDefault();
+    if (!csvFile) {
+      setError("Selecione um arquivo CSV.");
+      return;
+    }
+    if (!columnMapping.textCol) {
+      setError("Selecione a coluna de texto.");
+      return;
+    }
+    
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const formData = new FormData();
+      formData.append("action", "create_from_csv");
+      formData.append("file", csvFile);
+      formData.append("name", csvBatchName);
+      formData.append("targetReviews", String(csvTargetReviews));
+      formData.append("columnMapping", JSON.stringify(columnMapping));
+      
+      const response = await fetch("/api/admin/batches", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Não foi possível criar o lote.");
+      }
+      setNotice(`Lote criado com ${number(data.itemCount)} itens; ${data.targetReviews} avaliações por item.`);
+      setShowCsvUpload(false);
+      setCsvFile(null);
+      setCsvHeaders([]);
+      setColumnMapping({});
+      await loadWorkflow();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Falha ao criar lote.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadBatchesForCombine() {
+    setCombineLoading(true);
+    try {
+      const response = await fetch("/api/admin/batches?action=list_for_combine");
+      const data = await response.json();
+      if (response.ok) {
+        setCombineBatchesList(data.batches);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCombineLoading(false);
+    }
+  }
+
+  async function combineBatches(event: FormEvent) {
+    event.preventDefault();
+    if (combineBatchIds.length < 2) {
+      setError("Selecione pelo menos dois lotes.");
+      return;
+    }
+    if (!combineBatchName.trim()) {
+      setError("Informe um nome para o lote combinado.");
+      return;
+    }
+    
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const formData = new FormData();
+      formData.append("action", "combine_batches");
+      formData.append("batchIds", JSON.stringify(combineBatchIds));
+      formData.append("name", combineBatchName);
+      formData.append("targetReviews", String(combineTargetReviews));
+      
+      const response = await fetch("/api/admin/batches", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Não foi possível combinar os lotes.");
+      }
+      setNotice(`Lotes combinados: ${number(data.itemCount)} itens no novo lote.`);
+      setShowCombineBatches(false);
+      setCombineBatchIds([]);
+      setCombineBatchName(`Lote combinado ${new Date().toLocaleDateString("pt-BR")}`);
+      setCombineTargetReviews(1);
+      await loadWorkflow();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Falha ao combinar lotes.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function toggleDoubleReviewer(reviewerId: number, enabled: boolean) {
     setSaving(true);
@@ -3124,17 +3329,17 @@ function WorkflowAdminView({
     setSaving(true);
     setError("");
     setNotice("");
-    try {
-      const response = await fetch("/api/admin/workflow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create_batch",
-          name: batchName,
-          size: batchSize,
-          doubleReviewPercent: doublePercent,
-        }),
-      });
+        try {
+          const response = await fetch("/api/admin/workflow", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "create_batch",
+              name: batchName,
+              size: batchSize,
+              targetReviews: targetReviews,
+            }),
+          });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Não foi possível criar o lote.");
@@ -3213,22 +3418,34 @@ function WorkflowAdminView({
   };
 
   return (
-    <div className="workflow-dashboard">
-      <div className="workflow-heading">
-        <div>
-          <Layers3 size={21} />
-          <span>
-            <strong>Construção controlada do dataset gold</strong>
-            <small>
-              {workflow.inference.model} · {workflow.inference.promptVersion}
-            </small>
-          </span>
+      <div className="workflow-dashboard">
+        <div className="workflow-heading">
+          <div>
+            <Layers3 size={21} />
+            <span>
+              <strong>Construção controlada do dataset gold</strong>
+              <small>
+                {workflow.inference.model} · {workflow.inference.promptVersion}
+              </small>
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => { setShowCsvUpload(true); }} className="primary-button" style={{ padding: "8px 12px" }}>
+              <FileText size={16} /> Importar CSV
+            </button>
+            <button onClick={() => { setShowCombineBatches(true); loadBatchesForCombine(); }} className="primary-button" style={{ padding: "8px 12px", background: "#6366f1" }}>
+              <GitCompareArrows size={16} /> Combinar Lotes
+            </button>
+            <button onClick={() => { setShowFreezeModal(true); }} className="primary-button" style={{ padding: "8px 12px", background: workflow?.freeze_snapshot ? "#ef4444" : "#22c55e" }}>
+              {workflow?.freeze_snapshot ? <X size={16} /> : <ShieldCheck size={16} />}
+              {workflow?.freeze_snapshot ? "Descongelar" : "Congelar"} Avaliações
+            </button>
+            <button onClick={loadWorkflow} disabled={loading}>
+              <RotateCcw size={15} />
+              {loading ? "Atualizando..." : "Atualizar"}
+            </button>
+          </div>
         </div>
-        <button onClick={loadWorkflow} disabled={loading}>
-          <RotateCcw size={15} />
-          {loading ? "Atualizando..." : "Atualizar"}
-        </button>
-      </div>
 
       {error && (
         <div className="metrics-inline-error">
@@ -3396,63 +3613,57 @@ function WorkflowAdminView({
         </section>
 
         <form className="workflow-section batch-form" onSubmit={createBatch}>
-          <div className="metrics-section-heading">
-            <div>
-              <Target size={19} />
-              <span>
-                <strong>Novo lote balanceado</strong>
-                <small>
-                  Distribuição por rede, rótulo e tipo de discurso de ódio
-                </small>
-              </span>
-            </div>
-          </div>
-          <label>
-            Nome do lote
-            <input
-              value={batchName}
-              maxLength={120}
-              onChange={(event) => setBatchName(event.target.value)}
-              required
-            />
-          </label>
-          <div>
-            <label>
-              Quantidade de textos
-              <input
-                type="number"
-                min={1}
-                max={10000}
-                value={batchSize}
-                onChange={(event) => setBatchSize(Number(event.target.value))}
-                required
-              />
-            </label>
-            <label>
-              Amostra com revisão dupla
-              <select
-                value={doublePercent}
-                onChange={(event) =>
-                  setDoublePercent(Number(event.target.value))
-                }
-              >
-                <option value={0}>0%</option>
-                <option value={10}>10%</option>
-                <option value={20}>20%</option>
-                <option value={30}>30%</option>
-                <option value={50}>50%</option>
-                <option value={100}>100%</option>
-              </select>
-            </label>
-          </div>
-          <button className="primary-button" disabled={saving}>
-            {saving ? "Criando lote..." : "Criar lote balanceado"}
-          </button>
-          <small>
-            O sistema começa pelos estratos menos representados. Para revisão
-            dupla, selecione pelo menos dois avaliadores.
-          </small>
-        </form>
+                  <div className="metrics-section-heading">
+                    <div>
+                      <Target size={19} />
+                      <span>
+                        <strong>Novo lote balanceado</strong>
+                        <small>
+                          Distribuição por rede, rótulo e tipo de discurso de ódio
+                        </small>
+                      </span>
+                    </div>
+                  </div>
+                  <label>
+                    Nome do lote
+                    <input
+                      value={batchName}
+                      maxLength={120}
+                      onChange={(event) => setBatchName(event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Quantidade de textos
+                    <input
+                      type="number"
+                      min={1}
+                      max={10000}
+                      value={batchSize}
+                      onChange={(event) => setBatchSize(Number(event.target.value))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Avaliações por item
+                    <select
+                      value={targetReviews}
+                      onChange={(event) => setTargetReviews(Number(event.target.value))}
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                      <option value={4}>4</option>
+                      <option value={5}>5</option>
+                    </select>
+                  </label>
+                  <button className="primary-button" disabled={saving}>
+                    {saving ? "Criando lote..." : "Criar lote balanceado"}
+                  </button>
+                  <small>
+                    O sistema começa pelos estratos menos representados.
+                  </small>
+                </form>
       </div>
 
       <section className="workflow-section">
@@ -3469,32 +3680,32 @@ function WorkflowAdminView({
           <div className="metrics-table-wrap">
             <table className="metrics-table">
               <thead>
-                <tr>
-                  <th>Lote</th>
-                  <th>Selecionados</th>
-                  <th>Revisão dupla</th>
-                  <th>Resolvidos</th>
-                  <th>Aguardando 2ª</th>
-                  <th>Conflitos</th>
-                </tr>
-              </thead>
-              <tbody>
-                {workflow.batches.map((batch) => (
-                  <tr key={batch.batchId}>
-                    <td>
-                      <strong>{batch.name}</strong>
-                      <small>
-                        {new Date(batch.createdAt).toLocaleString("pt-BR")}
-                      </small>
-                    </td>
-                    <td>{number(batch.selectedSize)}</td>
-                    <td>{batch.doubleReviewPercent}%</td>
-                    <td>{number(batch.resolvedItems)}</td>
-                    <td>{number(batch.awaitingSecond)}</td>
-                    <td>{number(batch.conflictItems)}</td>
-                  </tr>
-                ))}
-              </tbody>
+                              <tr>
+                                <th>Lote</th>
+                                <th>Selecionados</th>
+                                <th>Avaliações/item</th>
+                                <th>Resolvidos</th>
+                                <th>Aguardando</th>
+                                <th>Conflitos</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {workflow.batches.map((batch) => (
+                                <tr key={batch.batchId}>
+                                  <td>
+                                    <strong>{batch.name}</strong>
+                                    <small>
+                                      {new Date(batch.createdAt).toLocaleString("pt-BR")}
+                                    </small>
+                                  </td>
+                                  <td>{number(batch.selectedSize)}</td>
+                                  <td>{batch.target_reviews || 1}</td>
+                                  <td>{number(batch.resolvedItems)}</td>
+                                  <td>{number(batch.awaiting_reviews || 0)}</td>
+                                  <td>{number(batch.conflictItems)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
             </table>
           </div>
         ) : (
@@ -3609,10 +3820,262 @@ function WorkflowAdminView({
         </div>
       </section>
     </div>
-  );
-}
 
-function AdminNliDataView() {
+      <CsvUploadModal
+        isOpen={showCsvUpload}
+        onClose={() => setShowCsvUpload(false)}
+        onSubmit={createBatchFromCsv}
+        batchName={csvBatchName}
+        setBatchName={setCsvBatchName}
+        targetReviews={csvTargetReviews}
+        setTargetReviews={setCsvTargetReviews}
+        csvFile={csvFile}
+        setCsvFile={setCsvFile}
+        csvHeaders={csvHeaders}
+        columnMapping={columnMapping}
+        setColumnMapping={setColumnMapping}
+        saving={saving}
+        error={error}
+      />
+      <CombineBatchesModal
+        isOpen={showCombineBatches}
+        onClose={() => setShowCombineBatches(false)}
+        onSubmit={combineBatches}
+        batches={combineBatchesList}
+        combineBatchIds={combineBatchIds}
+        setCombineBatchIds={setCombineBatchIds}
+        combineBatchName={combineBatchName}
+        setCombineBatchName={setCombineBatchName}
+        combineTargetReviews={combineTargetReviews}
+        setCombineTargetReviews={setCombineTargetReviews}
+        saving={saving}
+        error={error}
+        loading={combineLoading}
+      />
+      <FreezeModal
+        isOpen={showFreezeModal}
+        onClose={() => setShowFreezeModal(false)}
+        onConfirm={() => toggleFreeze(!workflow?.freeze_snapshot)}
+        freezeReason={freezeReason}
+        setFreezeReason={setFreezeReason}
+        saving={saving}
+        workflow={workflow}
+      />
+    </div>
+    </div>
+    );
+  }
+
+            // Modal para upload de CSV
+                function CsvUploadModal({
+          isOpen,
+          onClose,
+          onSubmit,
+          batchName,
+          setBatchName,
+          targetReviews,
+          setTargetReviews,
+          csvFile,
+          setCsvFile,
+          csvHeaders,
+          columnMapping,
+          setColumnMapping,
+          saving,
+          error,
+        }: {
+          isOpen: boolean;
+          onClose: () => void;
+          onSubmit: (event: React.FormEvent) => void;
+          batchName: string;
+          setBatchName: (value: string) => void;
+          targetReviews: number;
+          setTargetReviews: (value: number) => void;
+          csvFile: File | null;
+          setCsvFile: (file: File | null) => void;
+          csvHeaders: string[];
+          columnMapping: Record<string, string>;
+          setColumnMapping: (mapping: Record<string, string>) => void;
+          saving: boolean;
+          error: string;
+        }) {
+      if (!isOpen) return null;
+      return (
+        <div className="modal-overlay" onClick={onClose}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Importar Lote a partir de CSV</h3>
+            <form onSubmit={onSubmit}>
+              <label>
+                Nome do lote
+                <input value={batchName} onChange={(e) => setBatchName(e.target.value)} required maxLength={120} />
+              </label>
+              <label>
+                Avaliações por item
+                <select value={targetReviews} onChange={(e) => setTargetReviews(Number(e.target.value))}>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                  <option value={4}>4</option>
+                  <option value={5}>5</option>
+                </select>
+              </label>
+              <label>
+                Arquivo CSV
+                <input type="file" accept=".csv" onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)} required />
+              </label>
+              {csvHeaders.length > 0 && (
+                <div className="csv-column-mapping">
+                  <strong>Mapeamento de colunas:</strong>
+                  {csvHeaders.map((header) => (
+                    <label key={header} style={{ display: "flex", alignItems: "center", gap: "8px", margin: "4px 0" }}>
+                      <span style={{ minWidth: "200px" }}>{header}</span>
+                      <select
+                        value={columnMapping[header] || ""}
+                        onChange={(e) => setColumnMapping({ ...columnMapping, [header]: e.target.value })}
+                      >
+                        <option value="">— Ignorar —</option>
+                        <option value="textCol">Texto a avaliar (obrigatório)</option>
+                        <option value="labelCol">Rótulo (hate/nao_hate)</option>
+                        <option value="hateTypesCol">Tipos de hate</option>
+                        <option value="platformCol">Rede social</option>
+                        <option value="contentKindCol">Tipo (post/comment)</option>
+                        <option value="externalIdCol">ID externo</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {error && <div className="form-error">{error}</div>}
+              <div className="modal-actions">
+                <button type="button" onClick={onClose} disabled={saving}>Cancelar</button>
+                <button type="submit" className="primary-button" disabled={saving || !csvFile || !columnMapping.textCol}>
+                  {saving ? "Importando..." : "Criar lote"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // Modal para combinar lotes
+        function CombineBatchesModal({
+          isOpen,
+          onClose,
+          onSubmit,
+          batches,
+          combineBatchIds,
+          setCombineBatchIds,
+          combineBatchName,
+          setCombineBatchName,
+          combineTargetReviews,
+          setCombineTargetReviews,
+          saving,
+          error,
+          loading,
+        }: {
+          isOpen: boolean;
+          onClose: () => void;
+          onSubmit: (event: React.FormEvent) => void;
+          batches: Array<{ batchId: number; name: string; size: number; targetReviews: number }>;
+          combineBatchIds: number[];
+          setCombineBatchIds: (ids: number[]) => void;
+          combineBatchName: string;
+          setCombineBatchName: (value: string) => void;
+          combineTargetReviews: number;
+          setCombineTargetReviews: (value: number) => void;
+          saving: boolean;
+          error: string;
+          loading: boolean;
+        }) {
+      if (!isOpen) return null;
+      return (
+        <div className="modal-overlay" onClick={onClose}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>Combinar Lotes</h3>
+            <form onSubmit={onSubmit}>
+              <label>
+                Nome do novo lote
+                <input value={combineBatchName} onChange={(e) => setCombineBatchName(e.target.value)} required maxLength={120} />
+              </label>
+              <label>
+                Avaliações por item
+                <select value={combineTargetReviews} onChange={(e) => setCombineTargetReviews(Number(e.target.value))}>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                  <option value={4}>4</option>
+                  <option value={5}>5</option>
+                </select>
+              </label>
+              <label>
+                Lotes para combinar (mínimo 2)
+                <div style={{ maxHeight: "200px", overflow: "auto" }}>
+                  {loading ? "Carregando..." : batches.map((batch) => (
+                    <label key={batch.batchId} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px" }}>
+                      <input
+                        type="checkbox"
+                        checked={combineBatchIds.includes(batch.batchId)}
+                        onChange={(e) => setCombineBatchIds(e.target.checked ? [...combineBatchIds, batch.batchId] : combineBatchIds.filter((id) => id !== batch.batchId))}
+                      />
+                      <span>{batch.name} ({number(batch.size)} itens, {batch.targetReviews} avaliações/item)</span>
+                    </label>
+                  ))}
+                </div>
+              </label>
+              {error && <div className="form-error">{error}</div>}
+              <div className="modal-actions">
+                <button type="button" onClick={onClose} disabled={saving}>Cancelar</button>
+                <button type="submit" className="primary-button" disabled={saving || combineBatchIds.length < 2 || !combineBatchName.trim()}>
+                  {saving ? "Combinando..." : "Combinar lotes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // Modal para congelar/descongelar
+        function FreezeModal({
+          isOpen,
+          onClose,
+          onConfirm,
+          freezeReason,
+          setFreezeReason,
+          saving,
+          workflow,
+        }: {
+          isOpen: boolean;
+          onClose: () => void;
+          onConfirm: () => void;
+          freezeReason: string;
+          setFreezeReason: (value: string) => void;
+          saving: boolean;
+          workflow: { freeze_snapshot: boolean } | null;
+        }) {
+      if (!isOpen) return null;
+      const isFrozen = workflow?.freeze_snapshot;
+      return (
+        <div className="modal-overlay" onClick={onClose}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <h3>{isFrozen ? "Descongelar Avaliações" : "Congelar Avaliações"}</h3>
+            <p>{isFrozen ? "Isso permitirá que os avaliadores voltem a receber itens." : "Isso impedirá que os avaliadores recebam novos itens."}</p>
+            <label>
+              Motivo (obrigatório)
+              <textarea value={freezeReason} onChange={(e) => setFreezeReason(e.target.value)} rows={3} required placeholder="Explique o motivo do congelamento/descongelamento..." />
+            </label>
+            <div className="modal-actions">
+              <button onClick={onClose} disabled={saving}>Cancelar</button>
+              <button onClick={onConfirm} className="primary-button" style={{ background: isFrozen ? "#22c55e" : "#ef4444" }} disabled={saving || !freezeReason.trim()}>
+                {saving ? "Processando..." : (isFrozen ? "Descongelar" : "Congelar")}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function AdminNliDataView() {
   const [data, setData] = useState<AdminNliResponse | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -5277,6 +5740,34 @@ function InlineNliLayers({
       </section>
     </div>
   );
+}
+
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current);
+  return result.map((s) => s.trim());
 }
 
 function CorrectionPanel({

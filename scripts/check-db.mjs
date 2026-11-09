@@ -1,14 +1,16 @@
-import { config } from "dotenv";
 import path from "node:path";
 import pg from "pg";
 
-for (const envPath of [
-  path.resolve(process.cwd(), ".env.local"),
-  path.resolve(process.cwd(), ".env"),
-  path.resolve(process.cwd(), "../social_data_pipeline/.env"),
-]) {
-  config({ path: envPath, override: false, quiet: true });
-  if (process.env.POSTGRES_URI) break;
+if (!process.env.POSTGRES_URI) {
+  const { config } = await import("dotenv");
+  for (const envPath of [
+    path.resolve(process.cwd(), ".env.local"),
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), "../social_data_pipeline/.env"),
+  ]) {
+    config({ path: envPath, override: false, quiet: true });
+    if (process.env.POSTGRES_URI) break;
+  }
 }
 
 if (!process.env.POSTGRES_URI) {
@@ -38,6 +40,13 @@ try {
         WHERE table_schema = 'public'
           AND table_name = 'gold_reviewers'
           AND column_name = 'double_review_enabled'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'gold_reviewers'
+          AND column_name = 'review_target'
       )
       AND EXISTS (
         SELECT 1

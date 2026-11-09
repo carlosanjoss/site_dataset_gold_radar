@@ -41,6 +41,11 @@ export async function GET() {
       dailyResult,
       exampleResult,
       nliResult,
+      nliModelResult,
+      nliModelDimensionResult,
+      nliModelComparisonResult,
+      nliModelExampleResult,
+      nliRunResult,
     ] = await Promise.all([
       pool.query(
         `
@@ -438,12 +443,240 @@ export async function GET() {
         `,
         params,
       ),
+      pool.query(
+        `
+          WITH eligible AS (
+            SELECT DISTINCT a.platform, a.text_hash
+            FROM gemma_hate_analyses a
+            WHERE a.status = 'success'
+              AND a.is_hate IS TRUE
+              AND a.model_name = $1
+              AND a.prompt_version = $2
+              AND NULLIF(BTRIM(a.text_snapshot), '') IS NOT NULL
+          ), latest_results AS (
+            SELECT DISTINCT ON (r.platform, r.text_hash)
+              r.result_id,
+              r.platform,
+              r.text_hash,
+              r.nli_model_name,
+              r.primary_score,
+              r.toxicity_score,
+              r.toxicity_label,
+              r.created_at
+            FROM radar_nli_layer3_results r
+            JOIN gemma_hate_analyses source
+              ON source.analysis_id = r.source_gemma_analysis_id
+            WHERE source.model_name = $1
+              AND source.prompt_version = $2
+            ORDER BY r.platform, r.text_hash, r.created_at DESC, r.result_id DESC
+          )
+          SELECT
+            e.platform,
+            COUNT(*) AS eligible,
+            COUNT(model.result_id) AS processed,
+            AVG(model.primary_score) AS avg_primary_score,
+            AVG(model.toxicity_score) AS avg_toxicity_score,
+            COUNT(*) FILTER (WHERE model.toxicity_label = 'alta') AS high,
+            COUNT(*) FILTER (WHERE model.toxicity_label = 'media') AS medium,
+            COUNT(*) FILTER (WHERE model.toxicity_label = 'baixa') AS low,
+            COUNT(*) FILTER (
+              WHERE model.toxicity_label = 'nao_toxico'
+            ) AS non_toxic,
+            MAX(model.created_at) AS last_processed_at,
+            (ARRAY_AGG(model.nli_model_name ORDER BY model.created_at DESC)
+              FILTER (WHERE model.nli_model_name IS NOT NULL))[1] AS model_name
+          FROM eligible e
+          LEFT JOIN latest_results model
+            ON model.platform = e.platform AND model.text_hash = e.text_hash
+          GROUP BY GROUPING SETS ((e.platform), ())
+          ORDER BY e.platform NULLS FIRST
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          WITH latest_results AS (
+            SELECT DISTINCT ON (r.platform, r.text_hash)
+              r.result_id,
+              r.platform,
+              r.text_hash,
+              r.primary_dimension,
+              r.primary_score,
+              r.created_at
+            FROM radar_nli_layer3_results r
+            JOIN gemma_hate_analyses source
+              ON source.analysis_id = r.source_gemma_analysis_id
+            WHERE source.model_name = $1
+              AND source.prompt_version = $2
+            ORDER BY r.platform, r.text_hash, r.created_at DESC, r.result_id DESC
+          )
+          SELECT
+            primary_dimension,
+            COUNT(*) AS total,
+            AVG(primary_score) AS avg_score
+          FROM latest_results
+          WHERE primary_dimension IS NOT NULL
+          GROUP BY primary_dimension
+          ORDER BY total DESC, primary_dimension
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          WITH comparisons AS (
+            SELECT
+              human.layer3_level AS human_level,
+              CASE
+                WHEN human.layer3_level = 'N1' THEN 'baixa'
+                WHEN human.layer3_level IN ('N2', 'N3') THEN 'media'
+                WHEN human.layer3_level IN ('N4', 'N5') THEN 'alta'
+              END AS human_band,
+              model.toxicity_label AS model_band
+            FROM gold_nli_reviews human
+            JOIN gemma_hate_analyses analysis
+              ON analysis.analysis_id = human.analysis_id
+            JOIN LATERAL (
+              SELECT result.toxicity_label
+              FROM radar_nli_layer3_results result
+              WHERE result.source_gemma_analysis_id = human.analysis_id
+              ORDER BY result.created_at DESC, result.result_id DESC
+              LIMIT 1
+            ) model ON TRUE
+            WHERE human.review_status = 'completed'
+              AND analysis.model_name = $1
+              AND analysis.prompt_version = $2
+          )
+          SELECT human_level, human_band, model_band, COUNT(*) AS total
+          FROM comparisons
+          WHERE human_band IS NOT NULL AND model_band IS NOT NULL
+          GROUP BY human_level, human_band, model_band
+          ORDER BY human_level, model_band
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          WITH comparisons AS (
+            SELECT
+              human.analysis_id,
+              analysis.platform,
+              analysis.text_snapshot,
+              human.layer3_level AS human_level,
+              CASE
+                WHEN human.layer3_level = 'N1' THEN 1
+                WHEN human.layer3_level IN ('N2', 'N3') THEN 2
+                WHEN human.layer3_level IN ('N4', 'N5') THEN 3
+              END AS human_index,
+              model.toxicity_label AS model_band,
+              CASE model.toxicity_label
+                WHEN 'nao_toxico' THEN 0
+                WHEN 'baixa' THEN 1
+                WHEN 'media' THEN 2
+                WHEN 'alta' THEN 3
+              END AS model_index,
+              model.primary_score,
+              human.reviewed_at
+            FROM gold_nli_reviews human
+            JOIN gemma_hate_analyses analysis
+              ON analysis.analysis_id = human.analysis_id
+            JOIN LATERAL (
+              SELECT result.toxicity_label, result.primary_score
+              FROM radar_nli_layer3_results result
+              WHERE result.source_gemma_analysis_id = human.analysis_id
+              ORDER BY result.created_at DESC, result.result_id DESC
+              LIMIT 1
+            ) model ON TRUE
+            WHERE human.review_status = 'completed'
+              AND analysis.model_name = $1
+              AND analysis.prompt_version = $2
+          )
+          SELECT *
+          FROM comparisons
+          WHERE human_index IS NOT NULL
+            AND model_index IS NOT NULL
+            AND model_index < human_index
+          ORDER BY human_index - model_index DESC, reviewed_at DESC
+          LIMIT 5
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT
+            run_id,
+            run_name,
+            status,
+            nli_model_name,
+            total_selected,
+            processed_count,
+            started_at,
+            finished_at,
+            (
+              SELECT COUNT(*)
+              FROM radar_nli_runs failed
+              WHERE failed.layer_name = 'layer3' AND failed.status = 'failed'
+            ) AS failed_runs,
+            (
+              SELECT COUNT(*)
+              FROM radar_nli_runs completed
+              WHERE completed.layer_name = 'layer3'
+                AND completed.status = 'completed'
+            ) AS completed_runs
+          FROM radar_nli_runs
+          WHERE layer_name = 'layer3'
+          ORDER BY started_at DESC
+          LIMIT 1
+        `,
+      ),
     ]);
 
     const analyses = analysisResult.rows[0] as Record<string, unknown>;
     const reviews = reviewResult.rows[0] as Record<string, unknown>;
     const confusion = confusionResult.rows[0] as Record<string, unknown>;
     const nli = nliResult.rows[0] as Record<string, unknown>;
+    const nliModel = nliModelResult.rows.find((row) => row.platform === null) as
+      | Record<string, unknown>
+      | undefined;
+    const nliRun = nliRunResult.rows[0] as Record<string, unknown> | undefined;
+    const nliBandIndexes: Record<string, number> = {
+      nao_toxico: 0,
+      baixa: 1,
+      media: 2,
+      alta: 3,
+    };
+    const nliComparisonSample = nliModelComparisonResult.rows.reduce(
+      (sum, row) => sum + Number(row.total),
+      0,
+    );
+    const nliExactBandMatches = nliModelComparisonResult.rows.reduce(
+      (sum, row) =>
+        sum + (row.human_band === row.model_band ? Number(row.total) : 0),
+      0,
+    );
+    const nliNearBandMatches = nliModelComparisonResult.rows.reduce(
+      (sum, row) => {
+        const humanIndex = nliBandIndexes[String(row.human_band)];
+        const modelIndex = nliBandIndexes[String(row.model_band)];
+        return sum +
+          (Number.isFinite(humanIndex) &&
+          Number.isFinite(modelIndex) &&
+          Math.abs(humanIndex - modelIndex) <= 1
+            ? Number(row.total)
+            : 0);
+      },
+      0,
+    );
+    const nliBandAbsoluteError = nliModelComparisonResult.rows.reduce(
+      (sum, row) => {
+        const humanIndex = nliBandIndexes[String(row.human_band)];
+        const modelIndex = nliBandIndexes[String(row.model_band)];
+        return sum +
+          (Number.isFinite(humanIndex) && Number.isFinite(modelIndex)
+            ? Math.abs(humanIndex - modelIndex) * Number(row.total)
+            : 0);
+      },
+      0,
+    );
     const totalAnalyses = count(analyses, "total_analyses");
     const reviewed = count(reviews, "reviewed");
     const tp = count(confusion, "true_positive");
@@ -508,6 +741,103 @@ export async function GET() {
           ["social_dominance", "Dominância Social"],
           ["revictimization", "Revitimização e autovitimização"],
         ].map(([code, name]) => ({ code, name, count: count(nli, code) })),
+      },
+      nliModel: {
+        modelName: nliModel?.model_name ? String(nliModel.model_name) : null,
+        eligible: nliModel ? count(nliModel, "eligible") : 0,
+        processed: nliModel ? count(nliModel, "processed") : 0,
+        coverage: nliModel
+          ? ratio(count(nliModel, "processed"), count(nliModel, "eligible"))
+          : null,
+        averagePrimaryScore:
+          nliModel?.avg_primary_score === null ||
+          nliModel?.avg_primary_score === undefined
+            ? null
+            : Number(nliModel.avg_primary_score),
+        averageToxicityScore:
+          nliModel?.avg_toxicity_score === null ||
+          nliModel?.avg_toxicity_score === undefined
+            ? null
+            : Number(nliModel.avg_toxicity_score),
+        lastProcessedAt: nliModel?.last_processed_at
+          ? new Date(String(nliModel.last_processed_at)).toISOString()
+          : null,
+        toxicity: [
+          ["nao_toxico", "Não tóxico", "non_toxic"],
+          ["baixa", "Baixa", "low"],
+          ["media", "Média", "medium"],
+          ["alta", "Alta", "high"],
+        ].map(([code, name, key]) => ({
+          code,
+          name,
+          count: nliModel ? count(nliModel, key) : 0,
+        })),
+        primaryDimensions: nliModelDimensionResult.rows.map((row) => ({
+          code: String(row.primary_dimension),
+          count: Number(row.total),
+          averageScore:
+            row.avg_score === null ? null : Number(row.avg_score),
+        })),
+        comparison: {
+          sampleSize: nliComparisonSample,
+          exactBandAgreement: ratio(nliExactBandMatches, nliComparisonSample),
+          nearBandAgreement: ratio(nliNearBandMatches, nliComparisonSample),
+          meanAbsoluteError:
+            nliComparisonSample > 0
+              ? nliBandAbsoluteError / nliComparisonSample
+              : null,
+          matrix: ["baixa", "media", "alta"].map((humanBand) => ({
+            humanBand,
+            counts: ["nao_toxico", "baixa", "media", "alta"].map(
+              (modelBand) => ({
+                modelBand,
+                count: nliModelComparisonResult.rows
+                  .filter(
+                    (row) =>
+                      row.human_band === humanBand &&
+                      row.model_band === modelBand,
+                  )
+                  .reduce((sum, row) => sum + Number(row.total), 0),
+              }),
+            ),
+          })),
+        },
+        run: nliRun
+          ? {
+              runId: Number(nliRun.run_id),
+              runName: String(nliRun.run_name),
+              status: String(nliRun.status),
+              totalSelected: Number(nliRun.total_selected),
+              processedCount: Number(nliRun.processed_count),
+              startedAt: new Date(String(nliRun.started_at)).toISOString(),
+              finishedAt: nliRun.finished_at
+                ? new Date(String(nliRun.finished_at)).toISOString()
+                : null,
+              completedRuns: count(nliRun, "completed_runs"),
+              failedRuns: count(nliRun, "failed_runs"),
+            }
+          : null,
+        platforms: nliModelResult.rows
+          .filter((row) => row.platform !== null)
+          .map((row) => ({
+            platform: String(row.platform),
+            eligible: Number(row.eligible),
+            processed: Number(row.processed),
+            coverage: ratio(Number(row.processed), Number(row.eligible)),
+            high: Number(row.high),
+            medium: Number(row.medium),
+            low: Number(row.low),
+            nonToxic: Number(row.non_toxic),
+          })),
+        underestimatedExamples: nliModelExampleResult.rows.map((row) => ({
+          analysisId: Number(row.analysis_id),
+          platform: String(row.platform),
+          text: String(row.text_snapshot),
+          humanLevel: String(row.human_level),
+          modelBand: String(row.model_band),
+          primaryScore:
+            row.primary_score === null ? null : Number(row.primary_score),
+        })),
       },
       model: {
         sampleSize: count(confusion, "sample_size"),

@@ -1,0 +1,1582 @@
+% Capítulo acadêmico para inclusão em documento principal por meio de:
+% \input{metodologia_treinamento_bert_v01}
+%
+% Pacotes recomendados no preâmbulo do documento principal:
+% \usepackage[T1]{fontenc}
+% \usepackage[utf8]{inputenc} % dispensável em distribuições LaTeX recentes
+% \usepackage[brazil]{babel}
+% \usepackage{amsmath,amssymb}
+% \usepackage{booktabs,longtable,array}
+% \usepackage{graphicx}
+% \usepackage{url}
+% \usepackage[hidelinks]{hyperref}
+% \usepackage[alf]{abntex2cite}
+%
+% As referências foram incorporadas ao final deste arquivo para que o capítulo
+% não dependa de um arquivo .bib externo. Caso o documento principal já possua
+% bibliografia própria, os itens podem ser transferidos para ela sem alterar as
+% chaves usadas nas citações.
+
+\chapter{Metodologia de treinamento dos modelos BERT}
+\label{cap:metodologia-bert-v01}
+
+\section{Visão geral e objetivos}
+\label{sec:visao-geral-bert}
+
+Este capítulo estabelece o protocolo para construção, treinamento, seleção e
+avaliação dos primeiros classificadores supervisionados do projeto Radar Ódio
+a partir do \textit{Dataset} v0.1. Essa versão será formada pelas avaliações
+humanas resolvidas que correspondam a, no mínimo, 10\% do universo elegível. O
+objetivo não é tratar a v0.1 como versão definitiva do conjunto de dados, mas
+como o primeiro marco reprodutível de um processo contínuo de aprendizagem e
+avaliação, a ser ampliado nas versões posteriores.
+
+A estratégia emprega modelos pré-treinados da família BERT e derivados. O uso
+de representações contextuais pré-treinadas permite adaptar um modelo de língua
+a uma tarefa supervisionada mediante a adição de uma camada de classificação e
+o ajuste conjunto dos parâmetros, procedimento conhecido como \textit{fine-tuning}
+\cite{devlin2019bert}. Para o português brasileiro, os modelos BERTimbau
+constituem referências monolíngues relevantes, tendo sido pré-treinados em um
+grande corpus nacional e avaliados em diferentes tarefas de processamento de
+linguagem natural \cite{souza2020bertimbau}. Modelos multilíngues serão incluídos
+como controles comparativos, permitindo verificar se a especialização no idioma
+produz vantagem no domínio de textos oriundos de redes sociais.
+
+O protocolo contempla duas tarefas relacionadas, porém treinadas e avaliadas
+separadamente:
+
+\begin{enumerate}
+    \item \textbf{detecção binária de discurso de ódio}: classificação de cada
+    texto como \texttt{hate} ou \texttt{nao\_hate};
+    \item \textbf{classificação multirrótulo dos tipos de ódio}: atribuição de
+    zero ou mais categorias temáticas aos registros cujo rótulo gold seja
+    \texttt{hate}.
+\end{enumerate}
+
+Essa separação define a arquitetura hierárquica candidata: o primeiro modelo
+decide se o conteúdo contém discurso de ódio; quando a decisão é positiva, o
+segundo identifica os tipos aplicáveis. Sua adoção não será tratada como uma
+vantagem presumida. Ela será comparada a uma arquitetura conjunta e terá a
+propagação de erros quantificada, conforme a Seção~\ref{sec:arquiteturas}.
+
+\section{Perguntas de pesquisa, hipóteses e contribuição}
+\label{sec:perguntas-hipoteses}
+
+Os modelos são empregados como instrumentos para investigar generalização,
+desbalanceamento, calibração e propagação de erros, e não apenas como alternativas
+de implementação. As perguntas de pesquisa são:
+
+\begin{description}
+    \item[RQ1:] um encoder monolíngue pré-treinado em português brasileiro
+    apresenta desempenho superior a encoders multilíngues comparáveis na
+    detecção de discurso de ódio?
+    \item[RQ2:] a ponderação da função de perda melhora a identificação da
+    classe minoritária \texttt{hate} e dos tipos menos frequentes?
+    \item[RQ3:] a calibração pós-processada reduz o erro das probabilidades
+    estimadas sem deteriorar a discriminação?
+    \item[RQ4:] o desempenho varia entre plataformas e se mantém quando uma
+    plataforma inteira é excluída do treinamento?
+    \item[RQ5:] qual é a perda de desempenho causada pela propagação de erros
+    entre a detecção binária e a classificação dos tipos?
+    \item[RQ6:] o desempenho se mantém em dados coletados depois do período
+    representado pela v0.1?
+    \item[RQ7:] o pré-treinamento específico em textos de redes sociais produz
+    vantagem sobre o pré-treinamento geral da web, especialmente no X/Twitter?
+\end{description}
+
+As hipóteses e os contrastes primários serão registrados antes da abertura do
+teste. Para RQ1, o contraste principal será BERTimbau Base contra mBERT, pois
+ambos possuem porte semelhante; BERTimbau Large e XLM-R serão comparações
+secundárias. Para RQ7, o contraste secundário pré-especificado será BERTabaporu
+Base contra BERTimbau Base, mantendo as mesmas partições e o mesmo protocolo de ajuste. Seja
+$M$ a métrica previamente indicada para cada pergunta. Serão
+testadas as seguintes hipóteses direcionais:
+
+\begin{align}
+    H_{0,1}&: M_{\mathrm{BERTimbau\ Base}}-M_{\mathrm{mBERT}} \leq 0,
+    &H_{1,1}&: M_{\mathrm{BERTimbau\ Base}}-M_{\mathrm{mBERT}} > 0;\\
+    H_{0,2}&: M_{\mathrm{ponderada}}-M_{\mathrm{comum}} \leq 0,
+    &H_{1,2}&: M_{\mathrm{ponderada}}-M_{\mathrm{comum}} > 0;\\
+    H_{0,3}&: E_{\mathrm{calibrado}}-E_{\mathrm{bruto}} \geq 0,
+    &H_{1,3}&: E_{\mathrm{calibrado}}-E_{\mathrm{bruto}} < 0;\\
+    H_{0,5}&: F1_{\mathrm{oracle}}-F1_{\mathrm{ponta\ a\ ponta}} \leq 0,
+    &H_{1,5}&: F1_{\mathrm{oracle}}-F1_{\mathrm{ponta\ a\ ponta}} > 0.
+\end{align}
+
+Em RQ3, $E$ designa o Brier score, com o ECE como medida complementar. RQ4 e
+RQ6 serão avaliadas como hipóteses de heterogeneidade e degradação de domínio,
+respectivamente. RQ6 é prospectiva e somente poderá receber resposta
+confirmatória quando houver um teste temporal posterior à v0.1.
+
+Além de significância estatística, será adotada como referência uma diferença
+mínima cientificamente relevante de $\delta=0{,}02$ em Macro-F1 ou F1 da classe
+\texttt{hate}. Esse valor constitui uma decisão operacional prévia, e não uma
+constante universal; análises de sensibilidade usarão também $\delta=0{,}01$ e
+$\delta=0{,}03$. A conclusão distinguirá: ausência de evidência, diferença
+estatisticamente compatível com zero e diferença superior ao limiar de relevância
+prática.
+
+\begin{longtable}{p{0.06\textwidth}p{0.25\textwidth}p{0.30\textwidth}p{0.18\textwidth}}
+    \caption{Matriz pré-especificada entre pergunta, hipótese, experimento e métrica.}
+    \label{tab:matriz-rq} \\
+    \toprule
+    \textbf{RQ} & \textbf{Contraste} & \textbf{Experimento} & \textbf{Métrica principal} \\
+    \midrule
+    \endfirsthead
+    \toprule
+    \textbf{RQ} & \textbf{Contraste} & \textbf{Experimento} & \textbf{Métrica principal} \\
+    \midrule
+    \endhead
+    RQ1 & monolíngue versus multilíngue & BERTimbau Base versus mBERT nas mesmas partições & Macro-F1 \\
+    RQ2 & perda ponderada versus comum & ablação pareada por backbone e semente & F1-\texttt{hate}; AUPRC \\
+    RQ3 & probabilidade calibrada versus bruta & \textit{temperature scaling} em conjunto próprio & Brier score; ECE \\
+    RQ4 & dentro versus fora do domínio & resultados por plataforma e \textit{leave-one-platform-out} & Macro-F1 \\
+    RQ5 & \textit{oracle} versus ponta a ponta & execução das duas formas sobre os mesmos exemplos & $\Delta$Macro-F1 \\
+    RQ6 & período histórico versus posterior & teste temporal nas versões posteriores & Macro-F1; AUPRC \\
+    RQ7 & pré-treinamento social versus web & BERTabaporu Base versus BERTimbau Base, globalmente e por plataforma & Macro-F1 \\
+    \bottomrule
+\end{longtable}
+
+A contribuição científica esperada é, portanto, a caracterização controlada de
+como idioma de pré-treinamento, desenho amostral, desbalanceamento, calibração,
+plataforma e organização hierárquica afetam classificadores de discurso de ódio
+em português brasileiro. A construção do dataset e a implementação dos modelos
+são meios para essa investigação. Resultados confirmatórios serão separados de
+análises exploratórias, especialmente para categorias raras e plataformas com
+baixa cobertura.
+
+\section{Definição e congelamento do Dataset v0.1}
+\label{sec:dataset-v01}
+
+\subsection{Retrato da base em 10 de setembro de 2026}
+
+Na data de referência deste protocolo, o universo continha 212.476 análises com
+estado de processamento bem-sucedido. A base gold reunia 25.090 textos canônicos
+com decisão humana resolvida, correspondentes a 11,81\% do universo. Desse total,
+3.995 registros haviam sido classificados como \texttt{hate} e 21.095 como
+\texttt{nao\_hate}. A distribuição evidencia desbalanceamento entre as classes:
+aproximadamente 15,92\% dos registros gold eram positivos e 84,08\% eram
+negativos.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Retrato da base gold em 10 de setembro de 2026.}
+    \label{tab:retrato-base-gold}
+    \begin{tabular}{lrr}
+        \toprule
+        \textbf{Indicador} & \textbf{Quantidade} & \textbf{Percentual} \\
+        \midrule
+        Universo elegível & 212.476 & 100,00\% \\
+        Decisões gold resolvidas & 25.090 & 11,81\% \\
+        Rótulo \texttt{hate} & 3.995 & 15,92\% do gold \\
+        Rótulo \texttt{nao\_hate} & 21.095 & 84,08\% do gold \\
+        \bottomrule
+    \end{tabular}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria com base nas tabelas de avaliação
+    do projeto.\par}
+\end{table}
+
+As decisões gold estavam distribuídas entre sete plataformas, conforme a
+Tabela~\ref{tab:distribuicao-plataforma}. Essa distribuição deverá ser recalculada
+no momento do congelamento, pois o acréscimo de avaliações pode alterar tanto as
+contagens quanto as proporções.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Distribuição preliminar das decisões gold por plataforma.}
+    \label{tab:distribuicao-plataforma}
+    \begin{tabular}{lr}
+        \toprule
+        \textbf{Plataforma} & \textbf{Quantidade} \\
+        \midrule
+        YouTube & 7.735 \\
+        Facebook & 4.891 \\
+        Reddit & 3.101 \\
+        WhatsApp & 3.037 \\
+        Twitter & 2.895 \\
+        Telegram & 2.660 \\
+        TikTok & 771 \\
+        \midrule
+        \textbf{Total} & \textbf{25.090} \\
+        \bottomrule
+    \end{tabular}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria com base nas tabelas de avaliação
+    do projeto.\par}
+\end{table}
+
+Entre os textos positivos, uma mesma publicação pode receber mais de um tipo de
+ódio. Por isso, a soma das frequências da Tabela~\ref{tab:tipos-odio-preliminar}
+é superior ao número total de textos classificados como \texttt{hate}.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Frequência preliminar dos tipos de ódio na base gold.}
+    \label{tab:tipos-odio-preliminar}
+    \begin{tabular}{llr}
+        \toprule
+        \textbf{Código} & \textbf{Categoria} & \textbf{Ocorrências} \\
+        \midrule
+        \texttt{political} & Ódio político & 1.841 \\
+        \texttt{sexism} & Sexismo & 1.020 \\
+        \texttt{lgbtphobia} & LGBTfobia & 725 \\
+        \texttt{aporophobia} & Classismo & 316 \\
+        \texttt{religious\_intolerance} & Intolerância religiosa & 255 \\
+        \texttt{racism} & Racismo & 241 \\
+        \texttt{xenophobia} & Xenofobia & 141 \\
+        \texttt{body\_shame} & Gordofobia & 123 \\
+        \texttt{ageism} & Ageísmo & 52 \\
+        \texttt{capacitism} & Capacitismo & 39 \\
+        \texttt{other} & Categoria histórica inativa & 1 \\
+        \bottomrule
+    \end{tabular}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria. As frequências são multirrótulo e,
+    portanto, não devem ser somadas para estimar o número de textos positivos.\par}
+\end{table}
+
+As categorias menos frequentes ainda não oferecem quantidade suficiente para
+uma avaliação confirmatória estável. Esse problema não será resolvido por meio
+da eliminação automática de categorias ou pela criação de exemplos artificiais
+antes da separação dos dados. Em vez disso, todos os rótulos ativos serão
+preservados no treinamento e os resultados das classes raras serão explicitamente
+marcados como exploratórios e acompanhados de intervalos de confiança.
+
+\subsection{Justificativa do tamanho da v0.1}
+
+O percentual de 10\% constitui um marco operacional para iniciar o ciclo de
+treinamento, e não uma justificativa estatística isolada. O retrato efetivamente
+alcançado reúne 25.090 registros e 3.995 positivos, com prevalência observada de
+15,92\%. Sob amostragem aleatória simples, a margem de erro aproximada de 95\%
+para essa prevalência seria de 0,45 ponto percentual. Esse cálculo não será
+interpretado como precisão efetiva porque a base foi estratificada, possui pesos
+desiguais e contém grupos correlacionados.
+
+Antes do congelamento será produzido um relatório de suficiência com: contagem
+esperada e observada de positivos; contagem por categoria, plataforma e tipo de
+conteúdo; tamanho efetivo da amostra; largura dos intervalos de confiança
+bootstrap; e quantidade de positivos em cada partição. Para pesos $w_i$, o
+tamanho efetivo descritivo será calculado por
+
+\begin{equation}
+    n_{\mathrm{efetivo}} =
+    \frac{\left(\sum_i w_i\right)^2}{\sum_i w_i^2}.
+\end{equation}
+
+Uma análise de poder por simulação, baseada apenas na parcela de desenvolvimento
+disponível, estimará a probabilidade de detectar uma diferença pareada de
+$\delta=0{,}02$ nas comparações primárias, com nível de 5\% e poder-alvo de 80\%.
+A simulação preservará prevalência, estratos e grupos e apresentará também a
+menor diferença detectável sob o tamanho alcançado. Seus parâmetros e código
+serão arquivados; nenhuma observação do teste será usada para ajustar a análise.
+
+O estudo binário será considerado apto à análise confirmatória apenas se o teste
+contiver quantidade suficiente de positivos para produzir estimativas estáveis e
+se os intervalos alcançarem precisão compatível com as comparações primárias.
+Para os tipos de ódio, a classificação confirmatória ou exploratória obedecerá
+aos critérios da Seção~\ref{sec:tarefa-multirrotulo}. Assim, ultrapassar o limiar
+de 21.248 registros autoriza o início do benchmark, mas não transforma automaticamente
+todas as análises por subgrupo em confirmatórias.
+
+\subsection{Regra de congelamento}
+
+Dez por cento de 212.476 registros correspondem a 21.247,6 observações. Assim,
+o limiar operacional da v0.1 será de 21.248 decisões gold válidas. Como as
+avaliações são organizadas em lotes, o congelamento ocorrerá ao término do
+primeiro lote completo que fizer a base atingir ou ultrapassar esse limiar. Não
+será realizado corte dentro de um lote já iniciado, evitando uma seleção
+oportunista de casos.
+
+O congelamento deverá produzir um instantâneo imutável, acompanhado de:
+
+\begin{itemize}
+    \item data e hora da extração;
+    \item consulta SQL ou código de exportação versionado;
+    \item número total de registros e distribuição dos rótulos;
+    \item identificador do último lote incorporado;
+    \item hash SHA-256 do arquivo exportado;
+    \item versão da taxonomia e do protocolo de avaliação;
+    \item histórico de exclusões e correções aplicadas.
+\end{itemize}
+
+Em 10 de setembro de 2026 foi produzida uma exportação candidata com 25.090
+decisões válidas. O volume já supera o limiar mínimo da v0.1. Entretanto, o lote
+24 ainda constava administrativamente como \texttt{active}, embora todos os seus
+953 itens possuíssem decisão resolvida. Por isso, o snapshot pode iniciar a
+preparação experimental, mas seu congelamento definitivo deverá registrar o
+encerramento administrativo do lote e confirmar novamente as contagens e hashes.
+
+Uma vez congelada, a v0.1 não deverá receber alterações silenciosas. Correções
+posteriores de rótulos deverão gerar uma nova versão do conjunto de dados, com
+registro das diferenças em relação à versão anterior.
+
+O manifesto de congelamento deverá identificar separadamente as versões do
+dataset, da taxonomia e do manual de anotação, por exemplo:
+
+\begin{quote}
+\texttt{dataset = radarodio-v0.1}\par
+\texttt{taxonomy = taxonomy-v1.2}\par
+\texttt{annotation-guidelines = annotation-guidelines-v1.2}
+\end{quote}
+
+Mudanças posteriores no manual ou na taxonomia não modificarão retroativamente
+o significado de decisões produzidas sob uma versão anterior.
+
+\subsection{Qualidade da anotação e formação do gold standard}
+\label{sec:qualidade-anotacao}
+
+Não será realizada nova dupla anotação sistemática da v0.1, pois esse procedimento
+é operacionalmente inviável no cronograma do projeto. O controle de confiabilidade
+utilizará os arquivos históricos de dupla anotação do Reddit como estudo auxiliar,
+mantido separado do teste principal. A auditoria disponível identificou 1.644
+pares binários válidos, dos quais 1.512 apresentaram consenso e 132 divergência,
+correspondendo a 91,97\% de concordância bruta e $\kappa$ de Cohen de aproximadamente
+0,39. Os 1.512 casos consensuais somente poderão ser incorporados depois de
+vinculação ao corpus, deduplicação e harmonização da taxonomia; divergências sem
+adjudicação permanecerão fora do gold.
+
+Antes da anotação definitiva, o projeto deverá arquivar uma ficha metodológica
+com o número e o perfil funcional dos avaliadores, treinamento recebido, versão
+do manual, exemplos de treinamento, exercício de qualificação, critérios de
+aprovação e procedimento para dúvidas. Informações pessoais dos avaliadores não
+entrarão no arquivo destinado ao treinamento dos modelos.
+
+Na tarefa binária, a concordância será descrita pelo percentual bruto, pelo
+kappa de Cohen e pelo alfa de Krippendorff. Na tarefa multirrótulo serão
+calculados o Jaccard e o F1 entre conjuntos, além da concordância e do alfa de
+Krippendorff por categoria \cite{cohen1960kappa,krippendorff2018content}. Todos
+os coeficientes serão acompanhados do número de
+itens, distribuição marginal e intervalo de confiança. A concordância não será
+usada isoladamente como prova de validade; desacordos serão analisados por
+categoria, plataforma e fenômeno linguístico.
+
+Haverá divergência quando os avaliadores históricos discordarem sobre o rótulo
+binário ou sobre ao menos um tipo ativo. Sem nova adjudicação rastreável, esses
+casos não serão transformados em rótulos de treinamento. Se uma adjudicação
+pontual vier a ocorrer, deverá registrar decisão, justificativa, versão das
+diretrizes, data e categorias em disputa, preservando as duas respostas originais.
+
+Na data de referência, todas as 25.090 decisões resolvidas no sistema tinham
+estado \texttt{single}. A v0.1 poderá ser usada para desenvolvimento e avaliação
+interna, mas a ausência de dupla anotação contemporânea e multiplataforma limita
+a força das conclusões sobre confiabilidade do gold. O estudo histórico do Reddit
+será reportado como evidência auxiliar, sem generalização automática para as
+demais plataformas.
+
+\subsection{Critérios de elegibilidade}
+
+Serão incluídos somente textos canônicos cujo consenso possua um dos estados
+\texttt{single}, \texttt{agreed} ou \texttt{adjudicated}. Serão excluídos:
+
+\begin{itemize}
+    \item avaliações puladas ou ainda atribuídas;
+    \item conflitos que não tenham sido adjudicados;
+    \item registros sem texto ou com falha de codificação não recuperável;
+    \item registros sem rótulo final consistente;
+    \item cópias não canônicas de textos duplicados;
+    \item observações que violem as regras vigentes da taxonomia.
+\end{itemize}
+
+Na data de referência, todas as 25.090 decisões resolvidas tinham estado
+\texttt{single}. Consequentemente, não é possível estimar concordância entre
+avaliadores para essa parcela da base. Essa condição será registrada como uma
+limitação da v0.1. Os casos históricos de revisão dupla serão mantidos em um
+conjunto auxiliar com proveniência própria e não alterarão silenciosamente o
+estado das decisões produzidas pelo sistema.
+
+O código histórico \texttt{other}, atualmente inativo, não integrará o vetor de
+saída da tarefa multirrótulo. O registro que ainda contém esse código poderá ser
+mantido na tarefa binária, mas deverá ser excluído da tarefa de tipos até que
+seja revisto e recodificado em uma categoria ativa.
+
+Antes da exportação serão aplicadas as seguintes invariantes:
+
+\begin{align}
+    \texttt{nao\_hate} &\Rightarrow
+    \texttt{gold\_hate\_types}=\varnothing,\\
+    \texttt{hate} &\Rightarrow
+    \left|\texttt{gold\_hate\_types}\right|\geq 1,
+\end{align}
+
+em que todos os tipos devem pertencer à versão ativa da taxonomia. A condição
+\texttt{hate} sem tipo não será silenciosamente convertida em negativa: o caso
+será devolvido para adjudicação ou ficará fora da tarefa multirrótulo até ser
+resolvido. Também serão verificadas unicidade de \texttt{analysis\_id}, presença
+dos campos obrigatórios, reprodução do \texttt{text\_hash}, ausência de tipos
+inativos e inexistência de rótulos conflitantes dentro de um grupo de duplicatas.
+O relatório dessas validações será armazenado com o snapshot.
+
+\subsection{Contrato de exportação}
+
+A extração para treinamento deverá seguir o contrato apresentado na
+Tabela~\ref{tab:contrato-exportacao}. Campos administrativos e identidades dos
+avaliadores não serão incorporados ao conjunto utilizado pelos modelos.
+
+\begin{longtable}{p{0.22\textwidth}p{0.16\textwidth}p{0.48\textwidth}}
+    \caption{Contrato mínimo de exportação do Dataset v0.1.}
+    \label{tab:contrato-exportacao} \\
+    \toprule
+    \textbf{Campo} & \textbf{Tipo} & \textbf{Finalidade} \\
+    \midrule
+    \endfirsthead
+    \toprule
+    \textbf{Campo} & \textbf{Tipo} & \textbf{Finalidade} \\
+    \midrule
+    \endhead
+    \texttt{analysis\_id} & inteiro & Identificador interno e rastreabilidade da análise. \\
+    \texttt{text\_hash} & texto & Identificação de duplicatas exatas e definição dos grupos de partição. \\
+    \texttt{text} & texto & Conteúdo anonimizado que será fornecido ao tokenizer. \\
+    \texttt{platform} & categoria & Auditoria e avaliação estratificada por plataforma. \\
+    \texttt{content\_kind} & categoria & Identificação de post ou comentário. \\
+    \texttt{gold\_label} & categoria & Alvo binário: \texttt{hate} ou \texttt{nao\_hate}. \\
+    \texttt{gold\_hate\_types} & lista & Conjunto dos tipos de ódio aplicáveis ao texto. \\
+    \texttt{decision\_status} & categoria & Indicação de decisão simples, concordante ou adjudicada. \\
+    \texttt{batch\_id} & inteiro & Identificação do lote de amostragem. \\
+    \texttt{stratum} & texto & Estrato usado na seleção e no cálculo de pesos amostrais. \\
+    \texttt{inclusion\_probability} & numérico & Probabilidade de inclusão, quando conhecida e auditável. \\
+    \texttt{duplicate\_group\_id} & texto & Grupo transitivo de duplicatas e quase duplicatas. \\
+    \texttt{context\_group\_id} & texto/nulo & Conversa, tópico ou publicação de origem compartilhada. \\
+    \texttt{content\_created\_at} & data/hora/nulo & Data do conteúdo para avaliação temporal. \\
+    \texttt{reviewed\_at} & data/hora & Controle da versão e avaliações temporais futuras. \\
+    \texttt{taxonomy\_version} & texto & Versão da taxonomia aplicada ao rótulo. \\
+    \texttt{guidelines\_version} & texto & Versão do manual de anotação. \\
+    \texttt{context\_dependency} & categoria/nulo & Indício de dependência de imagem, vídeo, conversa ou evento externo. \\
+    \bottomrule
+\end{longtable}
+
+Os campos \texttt{gemma\_label}, \texttt{gemma\_hate\_probability} e
+\texttt{gemma\_hate\_types} poderão ser exportados em uma tabela auxiliar
+restrita à auditoria, ao cálculo dos estratos e à reprodução do baseline. Eles
+não poderão ser concatenados ao texto nem empregados como atributos de entrada
+dos classificadores BERT. Essa separação impede que os novos modelos apenas
+reproduzam os sinais do sistema que orientou a amostragem.
+
+\section{Preparação dos textos}
+\label{sec:preparacao-textos}
+
+O pré-processamento será deliberadamente conservador. Modelos BERT utilizam
+tokenização em subpalavras e foram concebidos para aprender representações a
+partir de sequências próximas da linguagem observada. Remoções agressivas podem
+eliminar sinais relevantes para discurso de ódio, especialmente pontuação,
+emojis, hashtags, caixa, erros ortográficos e alterações intencionais de
+grafia.
+
+Cada texto passará, nesta ordem, pelas seguintes operações:
+
+\begin{enumerate}
+    \item conversão para Unicode e normalização na forma NFC;
+    \item substituição de sequências inválidas de codificação quando a correção
+    for inequívoca;
+    \item padronização de quebras de linha e espaços consecutivos;
+    \item substituição de URLs pelo marcador \texttt{<URL>};
+    \item substituição de nomes de usuário e menções pelo marcador
+    \texttt{<USER>};
+    \item substituição de endereços de e-mail por \texttt{<EMAIL>};
+    \item substituição de números de telefone por \texttt{<PHONE>};
+    \item remoção de espaços nas extremidades, sem alterar o restante do texto.
+\end{enumerate}
+
+Os marcadores serão adicionados como tokens especiais indivisíveis ao tokenizer
+de cada checkpoint, com redimensionamento correspondente da matriz de embeddings.
+As novas linhas serão inicializadas pelo procedimento padrão definido na
+configuração do checkpoint, treinadas durante o fine-tuning e controladas pelas
+mesmas sementes das demais inicializações. A lista de tokens, os IDs resultantes
+e o hash do tokenizer alterado serão registrados. Uma ablação no conjunto de
+desenvolvimento comparará o mascaramento com a manutenção das formas originais,
+após anonimização irreversível dos identificadores, para medir eventual perda de
+sinais úteis.
+
+Não serão aplicados \textit{stemming}, lematização, remoção de \textit{stopwords},
+tradução, conversão geral para minúsculas ou correção ortográfica. Os modelos
+sensíveis à caixa receberão a capitalização original. Expressões regulares,
+dicionários e versões de qualquer reconhecedor de informação pessoal serão
+versionados. Nomes de grupos sociais necessários à interpretação do alvo não
+serão removidos como se fossem identificadores pessoais. O texto bruto ficará
+em ambiente de acesso restrito; somente a versão anonimizada poderá integrar os
+artefatos de treinamento.
+
+O BERTabaporu é um modelo \textit{uncased}; portanto, sua normalização de caixa
+será realizada pelo tokenizer do próprio checkpoint. O arquivo de entrada comum
+continuará preservando a capitalização original, evitando que a inclusão desse
+modelo modifique os dados recebidos pelos encoders sensíveis à caixa.
+
+\subsection{Duplicatas e prevenção de vazamento}
+
+Primeiramente, o mapa de duplicatas do sistema será usado para manter uma única
+linha por \texttt{text\_hash} canônico. Em seguida, será criada uma representação
+normalizada em 5-gramas de caracteres. Pares com similaridade de Jaccard maior
+ou igual a 0,90 serão tratados como quase duplicatas para fins de partição. A
+detecção de quase duplicatas não implicará exclusão automática: os registros
+serão reunidos sob um mesmo identificador de grupo, garantindo que permaneçam
+na mesma partição e no mesmo fold.
+
+O limiar 0,90 será validado antes da divisão definitiva. Serão sorteados pares
+dos intervalos 0,80--0,89, 0,90--0,94 e 0,95--1,00 para julgamento humano cego,
+registrando precisão e revocação aproximadas do detector de quase duplicatas.
+Se a inspeção indicar separação inadequada, qualquer alteração do limiar será
+feita e documentada antes da abertura do teste.
+
+O agrupamento será transitivo. Os textos serão vértices de um grafo; cada par
+que satisfizer o limiar formará uma aresta; e cada componente conexo receberá
+um único \texttt{duplicate\_group\_id}. Assim, se $A$ for semelhante a $B$ e
+$B$ a $C$, os três permanecerão juntos mesmo quando a similaridade direta entre
+$A$ e $C$ for inferior a 0,90.
+
+Quando houver identificador confiável de conversa, tópico ou encadeamento, todos
+os textos do mesmo contexto também serão mantidos no mesmo grupo. Considera-se
+contexto compartilhado a mesma postagem original e seus comentários, a mesma
+thread, o mesmo encadeamento de respostas ou uma conversa identificada pelo
+mesmo ID de origem. Um \texttt{context\_group\_id} prevalecerá sobre a decisão
+individual de partição. Essa regra reduz o risco de um comentário no treinamento
+revelar o conteúdo de outro comentário relacionado presente no teste.
+
+\subsection{Comprimento das sequências}
+
+Antes de definir o truncamento, será calculada, separadamente para cada tokenizer,
+a distribuição do comprimento dos textos. Serão reportados média, mediana,
+percentis 90, 95 e 99, máximo e as proporções $P(L>128)$, $P(L>256)$ e
+$P(L>512)$. O limite técnico superior será de 512 tokens, incluindo os tokens
+especiais do encoder.
+
+Três políticas serão comparadas no desenvolvimento: (A) primeiros 510 tokens de
+conteúdo; (B) 255 tokens iniciais e 255 finais; e (C) janelas de até 510 tokens
+com sobreposição, agregadas no nível do documento. Para a política C, tamanho da
+janela, sobreposição e regra de agregação serão fixados antes do teste. Se menos
+de 5\% dos textos excederem 512 tokens e não houver diferença relevante no
+desenvolvimento, a política B será adotada por parcimônia. Caso contrário, a
+política será tratada como hiperparâmetro de ablação. A quantidade de textos
+truncados, o conteúdo médio descartado e o custo adicional do \textit{chunking}
+serão registrados.
+
+\section{Definição das tarefas de aprendizagem}
+\label{sec:tarefas-aprendizagem}
+
+\subsection{Tarefa A: detecção binária}
+
+Para um texto $x_i$, o alvo binário será definido por
+
+\begin{equation}
+    y_i =
+    \begin{cases}
+        1, & \text{se o rótulo gold for \texttt{hate}},\\
+        0, & \text{se o rótulo gold for \texttt{nao\_hate}}.
+    \end{cases}
+\end{equation}
+
+O vetor contextual associado ao token de classificação será fornecido a uma
+camada linear com duas saídas, seguida por \textit{softmax}. A função de perda
+será a entropia cruzada. Serão comparadas duas condições: perda sem ponderação e
+perda ponderada por classe. Na condição ponderada, o peso da classe $c$ será
+calculado apenas no subconjunto de treinamento de cada fold:
+
+\begin{equation}
+    \alpha_c = \frac{N_{\mathrm{treino}}}{2N_c},
+\end{equation}
+
+em que $N_c$ é o número de exemplos da classe $c$ no fold de treinamento.
+
+\subsection{Tarefa B: classificação multirrótulo}
+\label{sec:tarefa-multirrotulo}
+
+A tarefa multirrótulo utilizará somente os textos com rótulo gold
+\texttt{hate}. Para cada texto, será construído um vetor binário
+$\mathbf{y}_i \in \{0,1\}^{10}$, na seguinte ordem fixa:
+
+\begin{enumerate}
+    \item \texttt{ageism};
+    \item \texttt{aporophobia};
+    \item \texttt{body\_shame};
+    \item \texttt{capacitism};
+    \item \texttt{lgbtphobia};
+    \item \texttt{political};
+    \item \texttt{racism};
+    \item \texttt{religious\_intolerance};
+    \item \texttt{sexism};
+    \item \texttt{xenophobia}.
+\end{enumerate}
+
+No banco de origem, o rótulo de sexismo ainda está armazenado sob o código
+histórico \texttt{misogyny}. Durante a preparação da tarefa multirrótulo, esse
+valor será mapeado deterministicamente para \texttt{sexism}, sem alterar o
+arquivo bruto. A tabela de mapeamento e sua versão integrarão o manifesto do
+dataset.
+
+O cabeçote terá dez saídas independentes com ativação sigmoide. A perda será a
+entropia cruzada binária com logits, implementada por
+\texttt{BCEWithLogitsLoss}. Também serão comparadas uma condição sem ponderação
+e outra com peso positivo por categoria. Para a categoria $\ell$, o peso será
+calculado exclusivamente no fold de treinamento:
+
+\begin{equation}
+    p_{\ell} = \frac{N_{\ell}^{-}}{N_{\ell}^{+}},
+\end{equation}
+
+em que $N_{\ell}^{+}$ e $N_{\ell}^{-}$ são, respectivamente, as quantidades de
+exemplos positivos e negativos para o rótulo $\ell$.
+
+Uma categoria será considerada elegível para inferência confirmatória somente
+se possuir pelo menos 100 ocorrências na v0.1 e pelo menos 20 ocorrências no
+conjunto de teste. Esses valores são salvaguardas operacionais mínimas para
+evitar folds praticamente vazios; não garantem, sozinhos, precisão inferencial.
+Por isso, serão apresentados intervalos de confiança e uma análise de
+sensibilidade exigindo 20, 30 e 50 positivos no teste. Categorias cujo intervalo
+de 95\% para F1 permaneça excessivamente amplo serão descritas como exploratórias,
+mesmo que ultrapassem o limite mínimo.
+
+\section{Arquiteturas e propagação de erros}
+\label{sec:arquiteturas}
+
+O experimento principal comparará duas organizações sob o mesmo encoder,
+partições, pré-processamento e orçamento de ajuste:
+
+\begin{enumerate}
+    \item \textbf{hierárquica}: um classificador binário é executado primeiro e
+    o classificador multirrótulo somente produz tipos quando o primeiro estágio
+    prevê \texttt{hate};
+    \item \textbf{conjunta não hierárquica}: um único encoder possui onze saídas
+    sigmoides, uma para \texttt{hate} e dez para os tipos. Registros
+    \texttt{nao\_hate} recebem zero nos dez tipos, e nenhuma regra de bloqueio é
+    aplicada antes da medição. Inconsistências, como prever um tipo sem prever
+    \texttt{hate}, serão contabilizadas.
+\end{enumerate}
+
+Na arquitetura conjunta, a perda será a soma ponderada da perda binária e da
+perda dos tipos,
+
+\begin{equation}
+    \mathcal{L}_{\mathrm{conjunta}} =
+    \mathcal{L}_{\mathrm{binária}} +
+    \gamma\mathcal{L}_{\mathrm{tipos}},
+\end{equation}
+
+com $\gamma$ definido exclusivamente no desenvolvimento. Para limitar o custo,
+essa ablação será executada inicialmente com o backbone vencedor da tarefa
+binária; uma extensão aos demais backbones será identificada como análise
+secundária.
+
+O classificador de tipos será avaliado tanto com a entrada binária gold
+(condição \textit{oracle}) quanto no pipeline completo. A propagação de erros
+será quantificada por
+
+\begin{equation}
+    \Delta F1_{\mathrm{propagação}} =
+    F1_{\mathrm{oracle}}-F1_{\mathrm{ponta\ a\ ponta}},
+\end{equation}
+
+globalmente, por categoria e por plataforma. A comparação hierárquica versus
+conjunta utilizará predições pareadas no mesmo teste; qualquer vantagem deverá
+ser interpretada junto do custo computacional e da taxa de inconsistências.
+
+\section{Particionamento e desenho de validação}
+\label{sec:particionamento}
+
+\subsection{Teste fixo e conjunto de desenvolvimento}
+
+Após a formação dos grupos de duplicatas, 20\% da v0.1 serão reservados como
+conjunto de teste fixo. Dos 80\% restantes, 12,5\% serão separados previamente
+como conjunto de calibração, equivalentes a 10\% da base completa. Os 70\%
+restantes formarão o conjunto de seleção e ajuste. A proporção global será,
+portanto, 70\% para seleção/treinamento, 10\% para calibração e limiares e 20\%
+para teste. Todas as divisões respeitarão os grupos e a estratificação.
+
+O conjunto de calibração terá três usos previamente limitados: estimar o
+parâmetro de calibração, definir os limiares da configuração já selecionada e
+medir a estabilidade dessas escolhas. Ele não será usado para escolher backbone,
+taxa de aprendizado, perda, época ou política de truncamento. O teste será
+armazenado separadamente e não poderá participar de:
+
+\begin{itemize}
+    \item ajuste de hiperparâmetros;
+    \item seleção de modelo ou de época;
+    \item definição de pesos de classe;
+    \item escolha de limiares de decisão;
+    \item calibração de probabilidades ou escolha de seus métodos;
+    \item análise exploratória destinada a alterar o pipeline.
+\end{itemize}
+
+A divisão será realizada com estratificação iterativa multirrótulo, abordagem
+destinada a conservar distribuições de rótulos em problemas nos quais uma mesma
+instância pode pertencer a várias classes \cite{sechidis2011stratification}. O
+vetor de estratificação combinará o rótulo binário, os dez tipos de ódio, a
+plataforma, o tipo de conteúdo e o estrato de amostragem. A unidade indivisível
+será o grupo de duplicatas, e não o registro individual.
+
+\subsection{Validação cruzada}
+
+O conjunto de seleção e ajuste será dividido em cinco folds por meio da mesma
+estratégia de agrupamento e estratificação. Em cada rodada, quatro folds serão
+usados para treinamento e um para validação. Ao final das cinco rodadas, cada
+registro desse conjunto terá exatamente uma predição fora da amostra,
+denominada \textit{out-of-fold} (OOF).
+
+As predições OOF serão usadas para comparar configurações e estimar sua
+variabilidade sem consultar o conjunto de calibração. A métrica OOF global,
+calculada após concatenar as cinco predições de validação, será o critério
+principal de seleção. A média e o desvio-padrão das cinco métricas calculadas
+separadamente também serão reportados, mas não substituirão o critério global.
+Essa escolha é especialmente importante porque o
+fine-tuning de modelos pré-treinados pode apresentar variação relevante em
+função da inicialização e da ordem dos dados, sobretudo em conjuntos menores
+\cite{dodge2020finetuning}.
+
+\subsection{Correção do desenho amostral}
+
+Os lotes de avaliação foram balanceados a partir de informações como plataforma,
+rótulo previsto pelo Gemma e tipo previsto de ódio. Logo, a distribuição da
+base anotada pode diferir da distribuição do universo completo. O manifesto de
+amostragem registrará o universo disponível em cada lote, definição e tamanho
+dos estratos, quantidade selecionada, algoritmo, semente, critérios de exclusão,
+uso das previsões do Gemma e qualquer priorização manual. Para cada estrato $h$,
+será calculado o peso de expansão
+
+\begin{equation}
+    w_h = \frac{N_h}{n_h},
+\end{equation}
+
+em que $N_h$ é o número de registros elegíveis do estrato no universo e $n_h$
+é o número de registros selecionados do mesmo estrato. A expressão corresponde
+ao inverso da probabilidade de inclusão somente quando a seleção é conhecida e
+equiprovável dentro de cada estrato. Para estabilidade numérica, os pesos serão
+normalizados para média 1 dentro de cada partição.
+
+As métricas do teste serão apresentadas em duas versões: não ponderada, que
+descreve diretamente o conjunto anotado, e ponderada, que busca estimar o
+desempenho sob a composição do universo original. Essa segunda interpretação
+depende das hipóteses de inclusão conhecível, positividade e seleção ignorável
+dentro dos estratos. Seleção manual, revisão dirigida ou exclusão subjetiva
+viola essas hipóteses e não é corrigida automaticamente por $w_h$; nessa situação,
+a versão ponderada será qualificada como ajuste descritivo, não como estimativa
+representativa da população. Os pesos não serão calculados com base no rótulo
+gold do teste e jamais serão derivados de seus erros.
+
+Sempre que operacionalmente possível, será sorteada do universo uma amostra
+probabilística independente das previsões do Gemma. Ela será anotada pelo mesmo
+protocolo e usada como teste externo da prevalência, dos pesos e da generalização.
+Se essa amostra não existir na v0.1, a ausência será registrada como limitação e
+sua construção será prioridade da versão seguinte.
+
+\section{Modelos comparados}
+\label{sec:modelos-comparados}
+
+Cinco encoders serão submetidos ao mesmo desenho experimental:
+
+\begin{description}
+    \item[BERTimbau Base:] \texttt{neuralmind/bert-base-portuguese-cased},
+    modelo BERT Base monolíngue, sensível à caixa e pré-treinado para português
+    brasileiro \cite{souza2020bertimbau,neuralmind2026bertimbau};
+    \item[BERTimbau Large:] \texttt{neuralmind/bert-large-portuguese-cased},
+    versão de maior capacidade do mesmo projeto
+    \cite{souza2020bertimbau,neuralmind2026bertimbau};
+    \item[BERTabaporu Base:]
+    \texttt{pablocosta/bertabaporu-base-uncased}, modelo BERT Base monolíngue
+    sem distinção de caixa, pré-treinado em aproximadamente 238 milhões de
+    tweets em português brasileiro, provenientes de mais de 100 mil usuários e
+    totalizando cerca de 2,9 bilhões de tokens
+    \cite{dacosta2023bertabaporu,dacosta2026bertabaporu};
+    \item[mBERT:] \texttt{google-bert/bert-base-multilingual-cased}, modelo BERT
+    multilíngue sensível à caixa, pré-treinado em 104 idiomas
+    \cite{devlin2019bert,google2026mbert};
+    \item[XLM-R Base:] \texttt{FacebookAI/xlm-roberta-base}, encoder
+    multilíngue baseado em RoBERTa, incluído como comparador da família de
+    Transformers bidirecionais derivados de BERT
+    \cite{conneau2020xlmr,meta2026xlmr}.
+\end{description}
+
+O BERTabaporu permitirá testar diretamente o efeito do gênero de pré-treinamento:
+BERTimbau Base representa o português geral da web, enquanto BERTabaporu Base
+representa a linguagem de redes sociais. Como a v0.1 é multiplataforma, eventual
+vantagem no X/Twitter não será generalizada para as demais fontes. Serão
+reportados o resultado global, o resultado por plataforma e a interação entre
+modelo e plataforma. A versão
+\texttt{pablocosta/bertabaporu-large-uncased} ficará como extensão secundária,
+condicionada ao orçamento computacional, e não substituirá a execução do Base
+no benchmark principal.
+
+Os checkpoints e tokenizers serão carregados por meio da biblioteca
+Transformers \cite{wolf2020transformers}. A revisão exata de cada repositório
+será fixada por hash de commit no início dos experimentos, evitando que uma
+atualização remota altere silenciosamente os resultados.
+
+\subsection{Baselines}
+
+Três famílias de baselines serão mantidas:
+
+\begin{enumerate}
+    \item \textbf{baseline trivial}: previsão constante de \texttt{nao\_hate}
+    na tarefa binária e previsão determinada apenas pela prevalência de cada
+    categoria, estimada no treinamento, na tarefa multirrótulo;
+    \item \textbf{TF--IDF com regressão logística}: concatenação de n-gramas de
+    palavras de ordem 1--2 e n-gramas de caracteres de ordem 3--5, seguida por
+    regressão logística. O parâmetro $C$ será selecionado entre 0,1, 1 e 10 no
+    mesmo protocolo de cinco folds. Na tarefa multirrótulo será usado
+    \texttt{OneVsRestClassifier}, com um classificador logístico independente
+    para cada um dos dez tipos;
+    \item \textbf{Gemma}: uso das predições originais registradas antes da
+    revisão humana, sem novo ajuste. Esse baseline permitirá comparar os BERTs
+    com o sistema responsável pelas classificações iniciais.
+\end{enumerate}
+
+O baseline TF--IDF será submetido às mesmas partições, agrupamentos e métricas.
+Nenhum vocabulário ou transformador TF--IDF será ajustado fora do fold de
+treinamento. Como as previsões do Gemma ajudaram a definir estratos e prioridades
+de revisão, o desempenho desse baseline não será interpretado como proveniente
+de uma amostra independente do próprio sistema. A possível dependência entre a
+amostragem e seus erros será explicitada em todas as comparações.
+
+\section{Protocolo de fine-tuning}
+\label{sec:fine-tuning}
+
+Todos os encoders receberão cabeçotes de classificação novos, inicializados
+aleatoriamente. Os parâmetros do encoder e do cabeçote serão ajustados em
+conjunto. A faixa inicial segue a prática de fine-tuning apresentada para BERT,
+enquanto decisões adicionais serão verificadas em piloto no próprio domínio
+\cite{devlin2019bert}. O protocolo comum será:
+
+\begin{itemize}
+    \item otimizador AdamW, com $\beta_1=0{,}9$, $\beta_2=0{,}999$ e
+    $\epsilon=10^{-8}$;
+    \item tamanho efetivo de lote igual a 32, obtido por acúmulo de gradientes
+    quando necessário;
+    \item limite superior de oito épocas, entendido como teto operacional e não
+    como duração fixa;
+    \item avaliação ao final de cada época e parada antecipada após duas épocas
+    completas sem redução da perda de validação;
+    \item seleção do checkpoint de menor perda de validação, antes da otimização
+    de qualquer limiar;
+    \item aquecimento linear durante os 10\% primeiros passos;
+    \item decaimento linear da taxa de aprendizado após o aquecimento;
+    \item norma máxima do gradiente igual a 1,0;
+    \item precisão mista FP16 ou BF16 quando suportada pelo hardware;
+    \item embaralhamento reprodutível dos exemplos a cada época.
+\end{itemize}
+
+A perda de validação foi escolhida para a parada antecipada porque independe de
+um limiar de classificação; Macro-F1, F1-\texttt{hate} e AUPRC serão monitorados,
+mas não mudarão o checkpoint durante essa etapa. O teto de oito épocas apenas
+permite que a regra de paciência opere em tarefas multirrótulo de convergência
+mais lenta. O artigo original de BERT usou buscas mais curtas, tipicamente entre
+duas e quatro épocas \cite{devlin2019bert}; portanto, será realizado um piloto
+com curvas de treinamento. Se as curvas mostrarem convergência sistemática antes
+do teto, o custo será reduzido pela parada antecipada. Se permanecerem em melhora
+na oitava época, qualquer ampliação exigirá emenda prévia ao protocolo.
+
+Será avaliada a grade cartesiana formada por
+
+\begin{equation}
+    \eta \in \{10^{-5}, 2\times10^{-5}, 3\times10^{-5}, 5\times10^{-5}\}
+\end{equation}
+
+e
+
+\begin{equation}
+    \lambda \in \{0, 0{,}01\},
+\end{equation}
+
+em que $\eta$ representa a taxa de aprendizado e $\lambda$ o decaimento de
+peso. O valor $10^{-5}$ foi acrescentado às taxas usuais de BERT para contemplar
+ajustes mais conservadores, especialmente no modelo Large. A condição de perda
+comum ou ponderada será um fator experimental controlado, e não uma decisão
+tomada depois de observar o teste.
+
+\subsection{Busca de hiperparâmetros em duas etapas}
+
+Uma grade completa com cinco modelos, duas tarefas, oito combinações, cinco
+folds e duas perdas produziria 800 fine-tunings antes das repetições por semente.
+Para reduzir custo sem escolher configurações pelo teste, será usada a seguinte
+triagem pré-especificada:
+
+\begin{enumerate}
+    \item para cada combinação de backbone, tarefa e condição de perda, as oito
+    combinações de $\eta$ e $\lambda$ serão executadas por até duas épocas em uma
+    divisão interna fixa do conjunto de seleção, com semente 42;
+    \item as duas melhores combinações de cada célula serão continuadas até o
+    teto de oito épocas, sujeitas à mesma parada antecipada;
+    \item a melhor combinação de cada célula seguirá para os cinco folds. Se as
+    duas primeiras diferirem menos de 0,005 em Macro-F1, ambas seguirão para
+    evitar descarte baseado em ruído da triagem;
+    \item a configuração será selecionada pela métrica OOF global, obtida pela
+    concatenação das predições dos cinco folds com limiar 0,5. Somente depois
+    dessa seleção serão definidos calibração e limiares.
+\end{enumerate}
+
+Sem empates, a triagem compreende 160 execuções curtas, 40 continuações e 100
+ajustes em folds, em lugar de 800 ajustes completos. Antes da execução será
+estimado o orçamento em GPU-horas a partir do piloto, incluindo as repetições
+finais e a ablação de arquitetura. Se o orçamento disponível for insuficiente,
+o escopo será reduzido por regra registrada antes do teste, priorizando as
+perguntas de pesquisa, e não por resultados parciais convenientes.
+
+Na tarefa binária, Macro-F1 será o critério de seleção; F1-\texttt{hate} e AUPRC
+serão critérios secundários. Na tarefa multirrótulo, será usado Macro-F1 das
+categorias previamente elegíveis. Empates inferiores a 0,005 serão resolvidos,
+nesta ordem, por menor variância entre folds, menor perda OOF e menor taxa de
+aprendizado. Número de parâmetros e tempo de inferência não serão usados para
+desempatar taxas do mesmo backbone, pois permanecem essencialmente constantes.
+
+\subsection{Repetições e definição do modelo final}
+
+Após a seleção, cada condição experimental será treinada no conjunto de seleção
+e ajuste com as sementes 13, 42, 97, 123 e 2026. O número de épocas será fixado
+na mediana das melhores épocas dos cinco folds, evitando parada antecipada no
+teste ou no conjunto de calibração. As probabilidades dos cinco modelos serão
+preservadas para medir variabilidade de otimização.
+
+Para a avaliação principal de cada condição, o preditor final será o ensemble
+pré-especificado das cinco sementes, formado pela média dos logits antes da
+calibração. Nenhuma semente será escolhida pelo desempenho no teste. Caso seja
+necessário disponibilizar também um único checkpoint por restrição operacional,
+a semente 42 será usada por definição prévia e seus resultados serão reportados
+separadamente dos resultados do ensemble.
+
+\section{Limiarização e calibração}
+\label{sec:limiarizacao-calibracao}
+
+Na tarefa binária, o ensemble produzirá um logit médio e uma probabilidade
+estimada de \texttt{hate}. Depois de fixados backbone, hiperparâmetros, perda,
+época e sementes, o limiar $\tau$ será escolhido exclusivamente no conjunto de
+calibração. Serão testados valores entre 0,01 e 0,99 em incrementos de 0,01,
+selecionando-se o valor que maximizar o Macro-F1. Em empate, será escolhido o
+limiar mais próximo de 0,5 e, persistindo o empate, o maior limiar. O valor 0,5
+também será reportado como referência.
+
+Na tarefa multirrótulo, cada categoria $\ell$ terá um limiar próprio
+$\tau_{\ell}$, escolhido na mesma grade e no mesmo conjunto para maximizar o F1
+da categoria. Se houver menos de cinco exemplos positivos de uma categoria na
+calibração, seu limiar será mantido em 0,5 e o resultado será tratado como
+exploratório. A estabilidade será descrita reestimando os limiares em
+reamostragens agrupadas da calibração e, apenas como diagnóstico, nas validações
+dos cinco folds; serão reportados mediana, intervalo interquartil e amplitude.
+
+As probabilidades da tarefa binária serão adicionalmente calibradas por
+\textit{temperature scaling} ajustado nos logits médios das cinco sementes no
+conjunto reservado de calibração. Essa separação evita transferir diretamente
+um calibrador estimado sobre logits OOF, produzidos por modelos distintos, para
+um modelo final reajustado. Redes neurais modernas podem produzir probabilidades
+excessivamente confiantes, e o método oferece uma correção pós-processada simples
+\cite{guo2017calibration}.
+
+A temperatura não ponderada estimará calibração para a distribuição da amostra
+anotada. Uma temperatura ponderada, obtida pela minimização da log-verossimilhança
+negativa com pesos de inclusão, será estimada para a população somente se a
+auditoria do desenho amostral validar esses pesos. Caso contrário, não será feita
+alegação de que $P(\texttt{hate}\mid\text{amostra})$ corresponde a
+$P(\texttt{hate}\mid\text{população})$. O teste receberá apenas transformações e
+limiares já congelados. ECE será calculado com 15 intervalos de frequência
+aproximadamente igual; também serão apresentados Brier score e diagramas de
+confiabilidade antes e depois da calibração.
+
+\section{Métricas de avaliação}
+\label{sec:metricas-avaliacao}
+
+\subsection{Tarefa binária}
+
+O Macro-F1 será a métrica primária de comparação geral. F1-\texttt{hate} e AUPRC
+serão métricas centrais para as hipóteses sobre a classe positiva, mas não
+substituirão retroativamente a métrica definida para cada contraste na
+Tabela~\ref{tab:matriz-rq}. Para duas classes $C$, Macro-F1 será calculado
+por
+
+\begin{equation}
+    \operatorname{MacroF1} = \frac{1}{|C|}\sum_{c\in C}
+    \frac{2P_cR_c}{P_c+R_c},
+\end{equation}
+
+em que $P_c$ e $R_c$ representam precisão e revocação da classe $c$. O uso de
+Macro-F1 impede que o desempenho da classe majoritária domine sozinho a
+comparação.
+
+Também serão reportados:
+
+\begin{itemize}
+    \item precisão, revocação e F1 da classe \texttt{hate};
+    \item área sob a curva Precisão--Revocação (AUPRC);
+    \item área sob a curva ROC (AUROC);
+    \item coeficiente de correlação de Matthews (MCC);
+    \item acurácia balanceada;
+    \item matriz de confusão;
+    \item Brier score;
+    \item erro esperado de calibração (ECE);
+    \item curvas de confiabilidade antes e depois da calibração.
+\end{itemize}
+
+A AUPRC receberá destaque porque a classe positiva é minoritária. Em cenários
+desbalanceados, curvas Precisão--Revocação são mais informativas sobre a
+qualidade das predições positivas do que a curva ROC isoladamente
+\cite{saito2015precisionrecall}.
+
+\subsection{Tarefa multirrótulo}
+
+A métrica primária será o Macro-F1 calculado sobre as categorias elegíveis para
+análise confirmatória. Serão apresentados, adicionalmente:
+
+\begin{itemize}
+    \item Macro-F1 incluindo todos os rótulos ativos;
+    \item Micro-F1;
+    \item precisão, revocação, F1 e PR-AUC por categoria;
+    \item \textit{Hamming loss};
+    \item \textit{subset accuracy}, que exige correspondência exata do conjunto
+    de rótulos;
+    \item média da quantidade de rótulos previstos por texto;
+    \item matriz de coocorrência entre tipos verdadeiros e previstos.
+\end{itemize}
+
+Serão realizadas duas avaliações complementares. A avaliação \textit{oracle}
+aplicará o classificador de tipos somente aos registros cujo rótulo binário gold
+seja \texttt{hate}, medindo a capacidade específica de reconhecer categorias.
+A avaliação ponta a ponta executará primeiro o classificador binário e somente
+atribuirá tipos aos textos previstos como positivos. A diferença entre os dois
+resultados quantificará a propagação de erros da primeira etapa.
+
+\subsection{Incerteza e comparação entre modelos}
+
+Serão separadas duas fontes de incerteza. A variabilidade de otimização será
+descrita pela média, desvio-padrão, mínimo e máximo entre as cinco sementes. A
+incerteza amostral será estimada sobre a predição final pré-especificada por
+2.000 reamostragens bootstrap do conjunto de teste \cite{efron1993bootstrap}. O
+bootstrap será estratificado
+pelos estratos de amostragem e terá como unidade o maior agrupamento entre
+\texttt{duplicate\_group\_id} e \texttt{context\_group\_id}, preservando a
+dependência entre textos relacionados. Na versão ponderada, os pesos serão
+mantidos em cada reamostragem.
+
+Diferenças entre modelos serão examinadas por bootstrap pareado, calculando
+diretamente, em cada reamostragem, $\Delta M=M_A-M_B$ sobre os mesmos exemplos.
+Não será inferida diferença pela simples sobreposição de intervalos individuais.
+Os quatro contrastes primários da Tabela~\ref{tab:matriz-rq} serão apresentados
+sem expansão posterior do conjunto de hipóteses. Para famílias de comparações
+secundárias entre modelos, plataformas ou categorias, os valores de $p$ serão
+ajustados pelo procedimento de Holm \cite{holm1979procedure}. Magnitude,
+intervalo de confiança e relação
+com $\delta$ serão priorizados sobre uma decisão binária de significância.
+
+Além dos resultados globais, as métricas serão desagregadas por plataforma,
+tipo de conteúdo e categoria de ódio. Subgrupos com menos de 30 exemplos
+positivos não receberão interpretação comparativa; seus valores serão exibidos
+apenas como evidência exploratória, acompanhados do tamanho da amostra e do
+intervalo de confiança.
+
+Para avaliar generalização entre plataformas, será realizado um experimento
+\textit{leave-one-platform-out}: em cada rodada, uma plataforma será mantida
+inteiramente fora do ajuste e usada como domínio de teste. A rodada somente será
+confirmatória quando a plataforma excluída possuir ao menos 100 registros e 20
+positivos; nos demais casos será exploratória. Os resultados serão reportados
+para YouTube, WhatsApp, Telegram, Twitter/X, Facebook, Reddit e TikTok, sem
+combinar artificialmente plataformas pequenas para obter significância.
+
+Também serão registrados parâmetros, GPU-horas, memória máxima, duração do
+treinamento e tempo de inferência por mil textos. A interpretação final comparará
+ganho de desempenho e custo, evitando concluir que um modelo maior é preferível
+quando a diferença estiver abaixo de $\delta$ e o custo for substancialmente
+superior.
+
+\section{Testes funcionais e análise de erros}
+\label{sec:testes-funcionais}
+
+Métricas agregadas em um conjunto de teste podem ocultar falhas sistemáticas de
+modelos de detecção de discurso de ódio. O HateCheck demonstra a utilidade de
+testes funcionais construídos para fenômenos linguísticos específicos
+\cite{rottger2021hatecheck}. Com base nessa abordagem, será produzido um pequeno
+conjunto diagnóstico em português brasileiro, separado de treinamento,
+validação e teste estatístico.
+
+O conjunto funcional terá, como meta inicial, pelo menos 20 exemplos por
+fenômeno, equilibrando casos positivos e negativos quando isso for semanticamente
+aplicável. Os exemplos poderão ser adaptados de taxonomias funcionais publicadas,
+construídos de forma controlada ou extraídos do domínio, desde que origem e
+licença sejam registradas. O conjunto deverá contemplar, no mínimo:
+
+\begin{itemize}
+    \item negação de uma afirmação preconceituosa;
+    \item citação de discurso de ódio para denúncia ou análise;
+    \item contra-discurso e defesa do grupo atacado;
+    \item ironia e sarcasmo;
+    \item menção neutra a grupos sociais;
+    \item insulto individual sem ataque generalizante a um grupo;
+    \item grafias alteradas, separação de caracteres e uso de símbolos;
+    \item ameaça, incitação, desumanização e criminalização coletiva;
+    \item ataques explícitos e implícitos;
+    \item variações de gênero, número e referência pronominal.
+\end{itemize}
+
+Os casos serão classificados por dois avaliadores independentes e divergências
+serão adjudicadas pelo protocolo da Seção~\ref{sec:qualidade-anotacao}. Antes do
+uso, cada caso será comparado com treino, calibração e teste por hash, Jaccard e
+busca aproximada; casos equivalentes serão removidos ou reescritos e novamente
+validados. O conjunto funcional não será usado para ajustar hiperparâmetros. O
+desempenho será relatado por fenômeno, sem misturá-lo à estimativa principal do
+teste da v0.1.
+
+Após a avaliação quantitativa, será conduzida análise qualitativa de erros. Para
+cada modelo serão examinados, no mínimo, 50 falsos positivos e 50 falsos
+negativos da tarefa binária, sorteados com semente 2026 e estratificação por
+plataforma e faixa de confiança. Na tarefa multirrótulo serão sorteados erros das
+categorias mais frequentes e incluídos os erros disponíveis das categorias raras,
+respeitando as restrições de privacidade.
+
+Antes de examinar as predições será congelada a seguinte taxonomia inicial:
+\texttt{E01} contexto ausente; \texttt{E02} ironia; \texttt{E03} sarcasmo;
+\texttt{E04} negação; \texttt{E05} alvo implícito; \texttt{E06} ambiguidade
+lexical; \texttt{E07} linguagem codificada; \texttt{E08} truncamento;
+\texttt{E09} possível erro de anotação; \texttt{E10} conflito entre categorias;
+\texttt{E11} conhecimento externo necessário; e \texttt{E12} dependência
+multimodal. Novos códigos poderão emergir, mas serão identificados como
+pós-especificados. Uma parcela mínima de 20\% dos erros será codificada por dois
+avaliadores, com concordância reportada.
+
+Cada item indicará se depende de imagem, vídeo, mensagem anterior, thread,
+evento externo ou conhecimento sociopolítico. Será reportada a proporção de
+erros potencialmente insolúveis pelo texto isolado, distinguindo limitação do
+modelo de limitação da modalidade de entrada.
+
+\section{Reprodutibilidade, documentação e uso responsável}
+\label{sec:reprodutibilidade}
+
+Cada execução deverá gerar um manifesto contendo:
+
+\begin{itemize}
+    \item versão e hash SHA-256 do dataset;
+    \item hash do código e da consulta de extração;
+    \item commit do repositório, estado de alterações locais e comando executado;
+    \item arquivos imutáveis de \texttt{train\_ids}, \texttt{validation\_ids},
+    \texttt{calibration\_ids}, \texttt{test\_ids},
+    \texttt{duplicate\_groups} e \texttt{context\_groups};
+    \item checkpoint e revisão do tokenizer;
+    \item versões de Python, PyTorch, Transformers e demais dependências;
+    \item modelo, tarefa, hiperparâmetros e semente;
+    \item número de épocas, melhor época nos folds e curvas de perda;
+    \item hardware, precisão numérica, memória máxima, GPU-horas e tempo de
+    treinamento e inferência;
+    \item limiares, temperatura de calibração e pesos de classe;
+    \item métricas globais, ponderadas e por subgrupo;
+    \item caminho e hash dos checkpoints resultantes.
+\end{itemize}
+
+O ambiente de software será congelado por arquivo de dependências com versões
+exatas e, preferencialmente, por imagem de contêiner. Não se dependerá apenas da
+semente para reconstruir partições. As configurações de determinismo do PyTorch,
+CUDA e cuDNN serão registradas, incluindo flags ativadas e operações conhecidas
+como não determinísticas. Quando determinismo estrito reduzir de modo relevante
+o desempenho computacional ou não estiver disponível, a exceção será documentada.
+
+A documentação do dataset descreverá origem, composição, processo de amostragem,
+população representada, critérios de anotação, limitações e usos não recomendados.
+Esse procedimento é coerente com a proposta de \textit{data statements}, que
+busca tornar explícitas as condições sob as quais resultados de PLN podem ou não
+ser generalizados \cite{bender2018datastatements}. Cada modelo terá também uma
+ficha com finalidade, desempenho, grupos avaliados, limitações, riscos e uso
+pretendido, seguindo a proposta de \textit{model cards}
+\cite{mitchell2019modelcards}.
+
+Os classificadores não deverão ser descritos como substitutos da avaliação
+humana. Seu uso previsto é priorizar, apoiar ou acelerar a triagem de conteúdos.
+Decisões de alto impacto, estudos de prevalência e análises sobre grupos pouco
+representados deverão considerar a incerteza, o desenho amostral e a revisão de
+especialistas.
+
+Exemplos divulgados em artigos, dissertação ou fichas de modelo passarão por
+revisão específica de risco de reidentificação. Conforme o risco, serão usados
+mascaramento adicional, paráfrase fiel, exemplo sintético controlado ou omissão.
+Identificadores de origem e textos brutos não acompanharão os artefatos públicos.
+
+\section{Continuidade do processo}
+\label{sec:continuidade-processo}
+
+O teste da v0.1 permanecerá congelado nas versões posteriores, permitindo medir
+ganhos ou regressões no mesmo conjunto histórico. Contudo, após ter sido
+consultado em sucessivos ciclos, ele será interpretado como benchmark histórico
+ou teste de regressão, e não indefinidamente como única avaliação confirmatória.
+Novos registros avaliados serão incorporados ao desenvolvimento das versões
+v0.2, v0.3 e seguintes. Cada versão reservará um teste temporal formado por
+conteúdos estritamente posteriores ao período de treinamento; o teste temporal
+mais recente assumirá progressivamente o papel confirmatório.
+
+Para cada atualização serão repetidos os controles de elegibilidade,
+duplicidade, estratificação, treinamento e avaliação. A data de corte temporal
+será definida antes do treinamento e os grupos de contexto não poderão atravessá-la.
+Um modelo novo somente substituirá o anterior se não apresentar regressão
+relevante no teste histórico e demonstrar desempenho aceitável no teste temporal
+mais recente.
+
+O pré-treinamento adaptativo em dados não rotulados do domínio poderá ser
+investigado em uma etapa futura. Estudos anteriores mostram que a continuação do
+pré-treinamento em textos do domínio ou da tarefa pode produzir ganhos mesmo em
+cenários com poucos rótulos \cite{gururangan2020dontstop}. Contudo, esse
+procedimento não integrará o benchmark principal da v0.1, que comparará os
+checkpoints públicos originais sob o mesmo protocolo supervisionado.
+
+\section{Estudos de ablação}
+\label{sec:ablacoes}
+
+As decisões de engenharia que possam alterar as conclusões serão transformadas
+em contrastes controlados. As ablações pré-especificadas são:
+
+\begin{itemize}
+    \item perda comum versus perda ponderada;
+    \item arquitetura hierárquica versus conjunta;
+    \item encoder monolíngue versus multilíngue;
+    \item probabilidades brutas versus calibradas;
+    \item truncamento apenas no início versus início e fim e, se necessário,
+    \textit{chunking};
+    \item texto anonimizado com marcadores especiais versus anonimização sem os
+    marcadores explícitos.
+\end{itemize}
+
+Cada ablação alterará um componente por vez, manterá partições e sementes e será
+analisada de forma pareada. Perda, idioma, calibração e propagação hierárquica
+correspondem às perguntas primárias; truncamento e mascaramento serão análises
+secundárias no backbone vencedor, salvo se o piloto mostrar efeito suficiente
+para justificar expansão previamente documentada.
+
+\section{Fluxo experimental consolidado}
+\label{sec:fluxo-experimental}
+
+O procedimento completo seguirá a ordem abaixo. A posição do teste no fluxo
+representa isolamento lógico: seus rótulos somente serão acessados depois que os
+artefatos anteriores estiverem congelados.
+
+\begin{enumerate}
+    \item definir universo, estratos, probabilidades de inclusão e lotes;
+    \item concluir a anotação simples, auditar a dupla anotação histórica e
+    documentar concordância, divergências e exclusões;
+    \item congelar dataset, taxonomia e manual, com hashes e manifests;
+    \item executar anonimização, normalização e testes de consistência;
+    \item detectar duplicatas, formar componentes conexos e grupos de contexto;
+    \item criar e versionar as partições de seleção, calibração e teste;
+    \item perfilar comprimentos e executar apenas as ablações pré-especificadas;
+    \item realizar triagem de hiperparâmetros e validação cruzada;
+    \item produzir e concatenar predições OOF para seleção de configuração;
+    \item fixar época e treinar as cinco sementes finais;
+    \item formar o ensemble, ajustar calibração e limiares no conjunto próprio;
+    \item congelar checkpoint, tokenizer, calibrador, limiares e código;
+    \item abrir uma única vez o teste para a avaliação principal;
+    \item executar bootstrap pareado, análises por plataforma e eficiência;
+    \item executar avaliações externa, temporal e funcional quando disponíveis;
+    \item conduzir análise qualitativa reprodutível e publicar a documentação.
+\end{enumerate}
+
+\section{Ameaças à validade}
+\label{sec:ameacas-validade}
+
+As principais ameaças à interpretação dos resultados são:
+
+\begin{itemize}
+    \item \textbf{viés de seleção}: a amostra foi balanceada com base em sinais
+    do Gemma e pode não reproduzir diretamente a prevalência do universo;
+    \item \textbf{revisão simples}: a predominância de decisões
+    \texttt{single} impede estimar concordância entre avaliadores na maior parte
+    da v0.1;
+    \item \textbf{classes raras}: algumas categorias possuem poucas dezenas de
+    exemplos e não sustentam conclusões confirmatórias;
+    \item \textbf{mudança temporal}: linguagem ofensiva, códigos e plataformas
+    podem mudar depois do congelamento;
+    \item \textbf{dependência de contexto}: o texto isolado pode não conter
+    informações presentes na conversa, imagem, vídeo ou evento relacionado;
+    \item \textbf{propagação de erros}: no pipeline hierárquico, um falso
+    negativo binário impede a identificação dos tipos de ódio;
+    \item \textbf{generalização limitada}: os resultados serão válidos para a
+    composição observada de plataformas, períodos e categorias, não para todo
+    conteúdo em português brasileiro.
+\end{itemize}
+
+Essas limitações deverão acompanhar qualquer divulgação de métricas ou uso do
+modelo. A expansão contínua do dataset será orientada também pelos erros e pelas
+lacunas de cobertura detectadas na v0.1.
+
+\section{Tabelas para registro dos resultados}
+\label{sec:tabelas-resultados}
+
+As tabelas seguintes definem o formato de apresentação, mas não contêm valores
+experimentais. Os campos marcados com ``---'' deverão ser preenchidos somente
+após a execução do protocolo.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Modelo de tabela para a tarefa binária no teste fixo.}
+    \label{tab:modelo-resultados-binarios}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{lrrrrrrr}
+        \toprule
+        \textbf{Modelo} & \textbf{Macro-F1} & \textbf{F1 hate} &
+        \textbf{Precisão hate} & \textbf{Revocação hate} & \textbf{AUPRC} &
+        \textbf{MCC} & \textbf{ECE} \\
+        \midrule
+        TF--IDF + regressão logística & --- & --- & --- & --- & --- & --- & --- \\
+        Gemma & --- & --- & --- & --- & --- & --- & --- \\
+        BERTimbau Base & --- & --- & --- & --- & --- & --- & --- \\
+        BERTimbau Large & --- & --- & --- & --- & --- & --- & --- \\
+        BERTabaporu Base & --- & --- & --- & --- & --- & --- & --- \\
+        mBERT & --- & --- & --- & --- & --- & --- & --- \\
+        XLM-R Base & --- & --- & --- & --- & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria. Valores a serem preenchidos após
+    os experimentos.\par}
+\end{table}
+
+\begin{table}[htbp]
+    \centering
+    \caption{Modelo de tabela para a tarefa multirrótulo.}
+    \label{tab:modelo-resultados-multirrotulo}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{lrrrrrr}
+        \toprule
+        \textbf{Modelo} & \textbf{Macro-F1 elegível} &
+        \textbf{Macro-F1 total} & \textbf{Micro-F1} & \textbf{PR-AUC} &
+        \textbf{Hamming loss} & \textbf{Subset accuracy} \\
+        \midrule
+        TF--IDF + regressão logística & --- & --- & --- & --- & --- & --- \\
+        BERTimbau Base & --- & --- & --- & --- & --- & --- \\
+        BERTimbau Large & --- & --- & --- & --- & --- & --- \\
+        BERTabaporu Base & --- & --- & --- & --- & --- & --- \\
+        mBERT & --- & --- & --- & --- & --- & --- \\
+        XLM-R Base & --- & --- & --- & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria. Valores a serem preenchidos após
+    os experimentos.\par}
+\end{table}
+
+\begin{table}[htbp]
+    \centering
+    \caption{Modelo de tabela para resultados por categoria de ódio.}
+    \label{tab:modelo-resultados-categoria}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{lrrrrrr}
+        \toprule
+        \textbf{Categoria} & \textbf{$n$ teste} & \textbf{Precisão} &
+        \textbf{Revocação} & \textbf{F1} & \textbf{IC95\% F1} & \textbf{PR-AUC} \\
+        \midrule
+        Ageísmo & --- & --- & --- & --- & --- & --- \\
+        Classismo & --- & --- & --- & --- & --- & --- \\
+        Gordofobia & --- & --- & --- & --- & --- & --- \\
+        Capacitismo & --- & --- & --- & --- & --- & --- \\
+        LGBTfobia & --- & --- & --- & --- & --- & --- \\
+        Ódio político & --- & --- & --- & --- & --- & --- \\
+        Racismo & --- & --- & --- & --- & --- & --- \\
+        Intolerância religiosa & --- & --- & --- & --- & --- & --- \\
+        Sexismo & --- & --- & --- & --- & --- & --- \\
+        Xenofobia & --- & --- & --- & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria. Categorias abaixo do limiar
+    confirmatório deverão ser identificadas como exploratórias.\par}
+\end{table}
+
+\begin{table}[htbp]
+    \centering
+    \caption{Modelo de tabela para desempenho e eficiência computacional.}
+    \label{tab:modelo-eficiencia}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{lrrrrr}
+        \toprule
+        \textbf{Modelo} & \textbf{Macro-F1} & \textbf{Parâmetros} &
+        \textbf{GPU-horas} & \textbf{Memória máxima} &
+        \textbf{Tempo/1.000 textos} \\
+        \midrule
+        BERTimbau Base & --- & --- & --- & --- & --- \\
+        BERTimbau Large & --- & --- & --- & --- & --- \\
+        BERTabaporu Base & --- & --- & --- & --- & --- \\
+        mBERT & --- & --- & --- & --- & --- \\
+        XLM-R Base & --- & --- & --- & --- & --- \\
+        \bottomrule
+    \end{tabular}}
+    \par\smallskip
+    {\footnotesize Fonte: elaboração própria. Valores a serem preenchidos após
+    os experimentos.\par}
+\end{table}
+
+\section{Critérios de conclusão da etapa v0.1}
+\label{sec:criterios-conclusao}
+
+A etapa de treinamento da v0.1 será considerada metodologicamente concluída
+quando:
+
+\begin{enumerate}
+    \item o primeiro lote completo que alcance ao menos 21.248 decisões válidas
+    tiver sido congelado e versionado;
+    \item a suficiência amostral tiver sido examinada e as análises confirmatórias
+    e exploratórias estiverem separadas;
+    \item a dupla anotação histórica, as medidas de concordância e as exclusões
+    por divergência tiverem sido documentadas, e a ausência de dupla anotação
+    contemporânea estiver explicitamente declarada como limitação;
+    \item as partições tiverem sido verificadas quanto a duplicatas e vazamento;
+    \item todos os baselines e cinco encoders tiverem sido executados nas mesmas
+    divisões;
+    \item os hiperparâmetros tiverem sido definidos por OOF e os limiares e a
+    calibração pelo conjunto próprio, sem uso do teste;
+    \item as cinco sementes tiverem sido executadas para cada configuração
+    selecionada;
+    \item o ensemble final tiver sido fixado sem seleção posterior de semente;
+    \item as métricas globais, ponderadas, por plataforma e por categoria
+    tiverem sido calculadas com intervalos de confiança e comparações pareadas;
+    \item a análise funcional e a análise qualitativa de erros tiverem sido
+    documentadas;
+    \item os manifests, checkpoints, hashes, tabelas e fichas de documentação
+    tiverem sido arquivados de forma reprodutível.
+\end{enumerate}
+
+% -----------------------------------------------------------------------------
+% Referências incorporadas ao próprio capítulo
+% -----------------------------------------------------------------------------
+
+\begin{thebibliography}{99}
+
+\bibitem[Bender e Friedman(2018)]{bender2018datastatements}
+BENDER, Emily M.; FRIEDMAN, Batya.
+Data statements for natural language processing: toward mitigating system bias
+and enabling better science.
+\textit{Transactions of the Association for Computational Linguistics}, v. 6,
+p. 587--604, 2018.
+DOI: \url{https://doi.org/10.1162/tacl_a_00041}.
+
+\bibitem[Cohen(1960)]{cohen1960kappa}
+COHEN, Jacob.
+A coefficient of agreement for nominal scales.
+\textit{Educational and Psychological Measurement}, v. 20, n. 1, p. 37--46,
+1960.
+DOI: \url{https://doi.org/10.1177/001316446002000104}.
+
+\bibitem[Conneau et al.(2020)]{conneau2020xlmr}
+CONNEAU, Alexis et al.
+Unsupervised cross-lingual representation learning at scale.
+In: \textit{Proceedings of the 58th Annual Meeting of the Association for
+Computational Linguistics}. Online: Association for Computational Linguistics,
+2020. p. 8440--8451.
+Disponível em: \url{https://arxiv.org/abs/1911.02116}.
+
+\bibitem[da Costa et al.(2023)]{dacosta2023bertabaporu}
+DA COSTA, Pablo Botton; PAVAN, Matheus Camasmie; DOS SANTOS, Wesley Ramos;
+DA SILVA, Samuel Caetano; PARABONI, Ivandre.
+BERTabaporu: assessing a genre-specific language model for Portuguese NLP.
+In: \textit{Proceedings of the 14th International Conference on Recent Advances
+in Natural Language Processing}. Varna: INCOMA, 2023. p. 217--223.
+DOI: \url{https://doi.org/10.26615/978-954-452-092-2_024}.
+
+\bibitem[da Costa(2026)]{dacosta2026bertabaporu}
+DA COSTA, Pablo Botton.
+\textit{BERTabaporu Base Uncased: model card}.
+Hugging Face, 2026. Disponível em:
+\url{https://huggingface.co/pablocosta/bertabaporu-base-uncased}.
+Acesso em: 11 set. 2026.
+
+\bibitem[Devlin et al.(2019)]{devlin2019bert}
+DEVLIN, Jacob; CHANG, Ming-Wei; LEE, Kenton; TOUTANOVA, Kristina.
+BERT: pre-training of deep bidirectional transformers for language understanding.
+In: \textit{Proceedings of the 2019 Conference of the North American Chapter of
+the Association for Computational Linguistics: Human Language Technologies}.
+Minneapolis: Association for Computational Linguistics, 2019. p. 4171--4186.
+Disponível em: \url{https://arxiv.org/abs/1810.04805}.
+
+\bibitem[Dodge et al.(2020)]{dodge2020finetuning}
+DODGE, Jesse et al.
+Fine-tuning pretrained language models: weight initializations, data orders,
+and early stopping.
+\textit{arXiv preprint arXiv:2002.06305}, 2020.
+Disponível em: \url{https://arxiv.org/abs/2002.06305}.
+
+\bibitem[Efron e Tibshirani(1993)]{efron1993bootstrap}
+EFRON, Bradley; TIBSHIRANI, Robert J.
+\textit{An introduction to the bootstrap}.
+New York: Chapman \& Hall, 1993.
+DOI: \url{https://doi.org/10.1007/978-1-4899-4541-9}.
+
+\bibitem[Google BERT(2026)]{google2026mbert}
+GOOGLE BERT.
+\textit{BERT multilingual base model (cased): model card}.
+Hugging Face, 2026.
+Disponível em:
+\url{https://huggingface.co/google-bert/bert-base-multilingual-cased}.
+Acesso em: 1 set. 2026.
+
+\bibitem[Guo et al.(2017)]{guo2017calibration}
+GUO, Chuan; PLEISS, Geoff; SUN, Yu; WEINBERGER, Kilian Q.
+On calibration of modern neural networks.
+In: \textit{Proceedings of the 34th International Conference on Machine Learning}.
+Sydney: PMLR, 2017. v. 70, p. 1321--1330.
+Disponível em: \url{https://arxiv.org/abs/1706.04599}.
+
+\bibitem[Holm(1979)]{holm1979procedure}
+HOLM, Sture.
+A simple sequentially rejective multiple test procedure.
+\textit{Scandinavian Journal of Statistics}, v. 6, n. 2, p. 65--70, 1979.
+
+\bibitem[Gururangan et al.(2020)]{gururangan2020dontstop}
+GURURANGAN, Suchin et al.
+Don't stop pretraining: adapt language models to domains and tasks.
+In: \textit{Proceedings of the 58th Annual Meeting of the Association for
+Computational Linguistics}. Online: Association for Computational Linguistics,
+2020. p. 8342--8360.
+DOI: \url{https://doi.org/10.18653/v1/2020.acl-main.740}.
+
+\bibitem[Krippendorff(2018)]{krippendorff2018content}
+KRIPPENDORFF, Klaus.
+\textit{Content analysis: an introduction to its methodology}.
+4. ed. Thousand Oaks: SAGE, 2018.
+
+\bibitem[Meta AI(2026)]{meta2026xlmr}
+META AI.
+\textit{XLM-RoBERTa base: model card}.
+Hugging Face, 2026.
+Disponível em: \url{https://huggingface.co/FacebookAI/xlm-roberta-base}.
+Acesso em: 1 set. 2026.
+
+\bibitem[Mitchell et al.(2019)]{mitchell2019modelcards}
+MITCHELL, Margaret et al.
+Model cards for model reporting.
+In: \textit{Proceedings of the Conference on Fairness, Accountability, and
+Transparency}. New York: ACM, 2019. p. 220--229.
+DOI: \url{https://doi.org/10.1145/3287560.3287596}.
+
+\bibitem[NeuralMind(2026)]{neuralmind2026bertimbau}
+NEURALMIND.
+\textit{BERTimbau Base and Large: model cards}.
+Hugging Face, 2026.
+Disponível em:
+\url{https://huggingface.co/neuralmind/bert-base-portuguese-cased} e
+\url{https://huggingface.co/neuralmind/bert-large-portuguese-cased}.
+Acesso em: 1 set. 2026.
+
+\bibitem[Röttger et al.(2021)]{rottger2021hatecheck}
+RÖTTGER, Paul; VIDGEN, Bertie; NGUYEN, Dong; WASEEM, Zeerak; MARGETTS, Helen;
+PIERREHUMBERT, Janet.
+HateCheck: functional tests for hate speech detection models.
+In: \textit{Proceedings of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International Joint Conference on
+Natural Language Processing}. Online: Association for Computational Linguistics,
+2021. p. 41--58.
+DOI: \url{https://doi.org/10.18653/v1/2021.acl-long.4}.
+
+\bibitem[Saito e Rehmsmeier(2015)]{saito2015precisionrecall}
+SAITO, Takaya; REHMSMEIER, Marc.
+The precision-recall plot is more informative than the ROC plot when evaluating
+binary classifiers on imbalanced datasets.
+\textit{PLOS ONE}, v. 10, n. 3, e0118432, 2015.
+DOI: \url{https://doi.org/10.1371/journal.pone.0118432}.
+
+\bibitem[Sechidis, Tsoumakas e Vlahavas(2011)]{sechidis2011stratification}
+SECHIDIS, Konstantinos; TSOUMAKAS, Grigorios; VLAHAVAS, Ioannis.
+On the stratification of multi-label data.
+In: \textit{Machine Learning and Knowledge Discovery in Databases}.
+Berlin: Springer, 2011. p. 145--158.
+DOI: \url{https://doi.org/10.1007/978-3-642-23808-6_10}.
+
+\bibitem[Souza, Nogueira e Lotufo(2020)]{souza2020bertimbau}
+SOUZA, Fábio; NOGUEIRA, Rodrigo; LOTUFO, Roberto.
+BERTimbau: pretrained BERT models for Brazilian Portuguese.
+In: \textit{Intelligent Systems: 9th Brazilian Conference, BRACIS 2020}.
+Cham: Springer, 2020. p. 403--417.
+DOI: \url{https://doi.org/10.1007/978-3-030-61377-8_28}.
+
+\bibitem[Wolf et al.(2020)]{wolf2020transformers}
+WOLF, Thomas et al.
+Transformers: state-of-the-art natural language processing.
+In: \textit{Proceedings of the 2020 Conference on Empirical Methods in Natural
+Language Processing: System Demonstrations}. Online: Association for
+Computational Linguistics, 2020. p. 38--45.
+DOI: \url{https://doi.org/10.18653/v1/2020.emnlp-demos.6}.
+
+\end{thebibliography}

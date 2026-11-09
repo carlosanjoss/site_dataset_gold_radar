@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedReviewer } from "@/lib/auth";
 import { currentInference, getPool } from "@/lib/db";
+import {
+  reviewPlatformPriority,
+  reviewPlatformOrderValuesSql,
+  reviewPlatformPrioritySql,
+} from "@/lib/review-priority";
+import { MINIMUM_SAMPLE_COVERAGE_PERCENT } from "@/lib/review-targets";
 import { writeAudit } from "@/lib/review-workflow";
 import { serverError, unauthorized } from "@/lib/responses";
 
@@ -13,7 +19,7 @@ const VALID_PLATFORMS = new Set([
   "whatsapp",
   "youtube",
 ]);
-const PLATFORM_COVERAGE_TARGET_PERCENT = 35;
+const PLATFORM_COVERAGE_TARGET_PERCENT = MINIMUM_SAMPLE_COVERAGE_PERCENT;
 
 async function getCategories() {
   const result = await getPool().query(
@@ -165,6 +171,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Verificar se as avaliações estão congeladas
+    const freezeCheck = await getPool().query(
+      `SELECT frozen FROM gold_review_freeze WHERE freeze_id = 1`,
+    );
+    if (freezeCheck.rowCount && freezeCheck.rows[0].frozen) {
+      return NextResponse.json(
+        { item: null, categories: [], frozen: true, message: "No momento não há avaliações a se fazer." },
+        { headers: { "Cache-Control": "no-store, max-age=0" } },
+      );
+    }
+
     const platform = request.nextUrl.searchParams.get("platform") || "";
     const contentKind = request.nextUrl.searchParams.get("contentKind") || "";
     const gemmaLabel = request.nextUrl.searchParams.get("gemmaLabel") || "";
@@ -207,13 +224,62 @@ export async function GET(request: NextRequest) {
         "SELECT pg_advisory_xact_lock(731904, $1::INTEGER)",
         [reviewer.reviewerId],
       );
+      await client.query(
+        `
+          WITH dataset AS (
+            SELECT CEIL(
+              COUNT(*) * ($3::NUMERIC / 100)
+            )::INTEGER AS minimum_target
+            FROM gemma_hate_analyses
+            WHERE status = 'success'
+              AND model_name = $1
+              AND prompt_version = $2
+          ), active_reviewers AS (
+            SELECT COUNT(*)::INTEGER AS total
+            FROM gold_reviewers
+            WHERE active IS TRUE
+              AND username IS NOT NULL
+          ), allocation AS (
+            SELECT GREATEST(
+              CEIL(
+                dataset.minimum_target::NUMERIC /
+                GREATEST(active_reviewers.total, 1)
+              )::INTEGER,
+              1
+            ) AS increment
+            FROM dataset, active_reviewers
+          ), completed AS (
+            SELECT COUNT(*)::INTEGER AS total
+            FROM gold_hate_reviews
+            WHERE reviewer_id = $4
+              AND review_status IN ('confirmed', 'corrected')
+          )
+          UPDATE gold_reviewers target
+          SET review_target = GREATEST(
+            target.review_target + allocation.increment,
+            completed.total + allocation.increment
+          )
+          FROM allocation, completed
+          WHERE target.reviewer_id = $4
+            AND target.active IS TRUE
+            AND target.review_target <= completed.total
+        `,
+        [
+          inference.model,
+          inference.promptVersion,
+          MINIMUM_SAMPLE_COVERAGE_PERCENT,
+          reviewer.reviewerId,
+        ],
+      );
       const existing = await client.query(
         `
           SELECT r.analysis_id
           FROM gold_hate_reviews r
           JOIN gemma_hate_analyses a ON a.analysis_id = r.analysis_id
           WHERE ${existingFilters.join(" AND ")}
-          ORDER BY r.assigned_at
+          ORDER BY
+            ${reviewPlatformPrioritySql("a.platform")},
+            r.assigned_at
           LIMIT 1
         `,
         existingParams,
@@ -243,15 +309,6 @@ export async function GET(request: NextRequest) {
             WHERE taken.analysis_id = i.analysis_id
               AND taken.review_status <> 'skipped'
           ) < i.target_reviews`,
-          `(
-            i.target_reviews = 1
-            OR EXISTS (
-              SELECT 1
-              FROM gold_reviewers eligible
-              WHERE eligible.reviewer_id = $1
-                AND eligible.double_review_enabled IS TRUE
-            )
-          )`,
         ];
         if (platform) {
           batchParams.push(platform);
@@ -300,16 +357,10 @@ export async function GET(request: NextRequest) {
               i.analysis_id,
               i.target_reviews,
               (
-                CASE
-                  WHEN NOT EXISTS (
-                    SELECT 1
-                    FROM gold_hate_reviews taken
-                    WHERE taken.analysis_id = i.analysis_id
-                      AND taken.review_round = 1
-                      AND taken.review_status <> 'skipped'
-                  ) THEN 1
-                  ELSE 2
-                END
+                SELECT COALESCE(MAX(review_round), 0) + 1
+                FROM gold_hate_reviews r
+                WHERE r.analysis_id = i.analysis_id
+                  AND r.review_status <> 'skipped'
               ) AS review_round
             FROM gold_sampling_batch_items i
             JOIN gold_sampling_batches b ON b.batch_id = i.batch_id
@@ -317,6 +368,7 @@ export async function GET(request: NextRequest) {
             JOIN platform_coverage coverage ON coverage.platform = a.platform
             WHERE ${batchFilters.join(" AND ")}
             ORDER BY
+              ${reviewPlatformPrioritySql("a.platform")},
               CASE
                 WHEN coverage.work_count < coverage.target THEN 0
                 ELSE 1
@@ -367,45 +419,8 @@ export async function GET(request: NextRequest) {
             analysisId = null;
           }
         } else {
-          const params: Array<string | number> = [
-            inference.model,
-            inference.promptVersion,
-            PLATFORM_COVERAGE_TARGET_PERCENT,
-            reviewer.reviewerId,
-          ];
-          const filters = [
-            "a.status = 'success'",
-            "a.model_name = $1",
-            "a.prompt_version = $2",
-            "d.analysis_id = d.canonical_analysis_id",
-            `NOT EXISTS (
-              SELECT 1 FROM gold_hate_reviews mine
-              WHERE mine.analysis_id = a.analysis_id
-                AND mine.reviewer_id = $4
-            )`,
-            `NOT EXISTS (
-              SELECT 1 FROM gold_hate_reviews r
-              WHERE r.analysis_id = a.analysis_id
-                AND r.review_status <> 'skipped'
-            )`,
-            `NOT EXISTS (
-              SELECT 1 FROM gold_sampling_batch_items bi
-              WHERE bi.analysis_id = a.analysis_id
-            )`,
-          ];
-          if (platform) {
-            params.push(platform);
-            filters.push(`a.platform = $${params.length}`);
-          }
-          if (contentKind) {
-            params.push(contentKind);
-            filters.push(`a.content_kind = $${params.length}`);
-          }
-          if (gemmaLabel) {
-            params.push(gemmaLabel);
-            filters.push(`a.pred_label = $${params.length}`);
-          }
-          const candidate = await client.query(
+          // Step 1: Get platform coverage (lightweight, cached per request)
+          const coverageResult = await client.query(
             `
               WITH platform_totals AS MATERIALIZED (
                 SELECT source.platform, COUNT(*) AS total
@@ -424,50 +439,163 @@ export async function GET(request: NextRequest) {
                   AND source.model_name = $1
                   AND source.prompt_version = $2
                 GROUP BY source.platform
-              ), platform_coverage AS (
-                SELECT
-                  totals.platform,
-                  totals.total,
-                  COALESCE(work.work_count, 0) AS work_count,
-                  CEIL(
-                    totals.total * ($3::NUMERIC / 100)
-                  )::BIGINT AS target
-                FROM platform_totals totals
-                LEFT JOIN platform_work work
-                  ON work.platform = totals.platform
               )
-              SELECT a.analysis_id
+              SELECT
+                totals.platform,
+                totals.total,
+                COALESCE(work.work_count, 0) AS work_count,
+                CEIL(
+                  totals.total * ($3::NUMERIC / 100)
+                )::BIGINT AS target
+              FROM platform_totals totals
+              LEFT JOIN platform_work work
+                ON work.platform = totals.platform
+            `,
+            [inference.model, inference.promptVersion, PLATFORM_COVERAGE_TARGET_PERCENT],
+          );
+
+          const coverageByPlatform = new Map();
+          for (const row of coverageResult.rows) {
+            coverageByPlatform.set(String(row.platform), {
+              total: Number(row.total),
+              workCount: Number(row.work_count),
+              target: Number(row.target),
+            });
+          }
+
+          // Step 2: Get a small candidate pool per platform using the fast
+          // platform index, then balance the preferred platforms in memory.
+          const candidateParams: Array<string | number> = [
+            inference.model,
+            inference.promptVersion,
+            reviewer.reviewerId,
+          ];
+          let candidatePlatformParamIdx = 4;
+          let candidateContentKindParamIdx = 0;
+          let candidateGemmaLabelParamIdx = 0;
+
+          if (platform) {
+            candidateParams.push(platform);
+            candidatePlatformParamIdx = candidateParams.length;
+          }
+          if (contentKind) {
+            candidateParams.push(contentKind);
+            candidateContentKindParamIdx = candidateParams.length;
+          }
+          if (gemmaLabel) {
+            candidateParams.push(gemmaLabel);
+            candidateGemmaLabelParamIdx = candidateParams.length;
+          }
+
+          const candidateQuery = `
+            WITH platform_order(platform, priority) AS (
+              VALUES
+                ${reviewPlatformOrderValuesSql()}
+            )
+            SELECT
+              candidate.analysis_id,
+              candidate.platform,
+              candidate.pred_label,
+              candidate.hate_probability
+            FROM platform_order desired
+            CROSS JOIN LATERAL (
+              SELECT
+                a.analysis_id,
+                a.platform,
+                a.pred_label,
+                a.hate_probability
               FROM gemma_hate_analyses a
-              JOIN gold_duplicate_map d ON d.analysis_id = a.analysis_id
-              JOIN platform_coverage coverage ON coverage.platform = a.platform
-              WHERE ${filters.join(" AND ")}
+              WHERE a.platform = desired.platform
+                AND a.status = 'success'
+                AND a.model_name = $1
+                AND a.prompt_version = $2
+                ${platform ? `AND a.platform = $${candidatePlatformParamIdx}` : ""}
+                ${contentKind ? `AND a.content_kind = $${candidateContentKindParamIdx}` : ""}
+                ${gemmaLabel ? `AND a.pred_label = $${candidateGemmaLabelParamIdx}` : ""}
+                AND NOT EXISTS (
+                  SELECT 1 FROM gold_hate_reviews mine
+                  WHERE mine.analysis_id = a.analysis_id
+                    AND mine.reviewer_id = $3
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM gold_hate_reviews r
+                  WHERE r.analysis_id = a.analysis_id
+                    AND r.review_status <> 'skipped'
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM gold_sampling_batch_items bi
+                  WHERE bi.analysis_id = a.analysis_id
+                )
+                AND EXISTS (
+                  SELECT 1 FROM gold_duplicate_map d
+                  WHERE d.analysis_id = a.analysis_id
+                )
               ORDER BY
-                CASE
-                  WHEN coverage.work_count < coverage.target THEN 0
-                  ELSE 1
-                END,
-                coverage.work_count::NUMERIC / GREATEST(coverage.target, 1),
                 CASE WHEN a.pred_label = 'hate' THEN 0 ELSE 1 END,
                 ABS(COALESCE(a.hate_probability, 0.5) - 0.5),
                 a.analysis_id
-              FOR UPDATE OF a SKIP LOCKED
-              LIMIT 1
-            `,
-            params,
+              LIMIT 20
+            ) candidate
+            ORDER BY
+              desired.priority,
+              desired.platform,
+              CASE WHEN candidate.pred_label = 'hate' THEN 0 ELSE 1 END,
+              ABS(COALESCE(candidate.hate_probability, 0.5) - 0.5),
+              candidate.analysis_id
+          `;
+
+          const candidateResult = await client.query(
+            candidateQuery,
+            candidateParams,
           );
-          if (candidate.rowCount) {
-            analysisId = Number(candidate.rows[0].analysis_id);
-            const inserted = await client.query(
-              `
-                INSERT INTO gold_hate_reviews
-                  (analysis_id, reviewer_id, review_status, review_round)
-                VALUES ($1, $2, 'assigned', 1)
-                ON CONFLICT DO NOTHING
-                RETURNING review_id
-              `,
-              [analysisId, reviewer.reviewerId],
-            );
-            if (inserted.rowCount) {
+
+          // Step 3: Sort candidates by platform coverage priority in memory
+          if (candidateResult.rowCount && candidateResult.rowCount > 0) {
+            const candidates = candidateResult.rows.map((row) => ({
+              analysisId: Number(row.analysis_id),
+              platform: String(row.platform),
+              predLabel: String(row.pred_label),
+              hateProbability: Number(row.hate_probability),
+            }));
+
+            // Prefer the scarce-platform tier, then keep coverage balanced
+            // between platforms in the same tier.
+            candidates.sort((a, b) => {
+              const priorityDifference =
+                reviewPlatformPriority(a.platform) -
+                reviewPlatformPriority(b.platform);
+              if (priorityDifference !== 0) return priorityDifference;
+              const covA = coverageByPlatform.get(a.platform) ?? {
+                workCount: 0,
+                target: 1,
+              };
+              const covB = coverageByPlatform.get(b.platform) ?? {
+                workCount: 0,
+                target: 1,
+              };
+              const aBelow = covA.workCount < covA.target ? 0 : 1;
+              const bBelow = covB.workCount < covB.target ? 0 : 1;
+              if (aBelow !== bBelow) return aBelow - bBelow;
+              const aRatio = covA.workCount / Math.max(covA.target, 1);
+              const bRatio = covB.workCount / Math.max(covB.target, 1);
+              if (aRatio !== bRatio) return aRatio - bRatio;
+              return 0; // Already pre-sorted by hate label and probability
+            });
+
+            for (const candidate of candidates) {
+              const inserted = await client.query(
+                `
+                  INSERT INTO gold_hate_reviews
+                    (analysis_id, reviewer_id, review_status, review_round)
+                  VALUES ($1, $2, 'assigned', 1)
+                  ON CONFLICT DO NOTHING
+                  RETURNING review_id
+                `,
+                [candidate.analysisId, reviewer.reviewerId],
+              );
+              if (!inserted.rowCount) continue;
+
+              analysisId = candidate.analysisId;
               await writeAudit(client, {
                 analysisId,
                 reviewId: Number(inserted.rows[0].review_id),
@@ -475,8 +603,7 @@ export async function GET(request: NextRequest) {
                 eventType: "assigned",
                 newValue: { reviewRound: 1, targetReviews: 1 },
               });
-            } else {
-              analysisId = null;
+              break;
             }
           }
         }

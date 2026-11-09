@@ -12,8 +12,10 @@
     "test": "npm run build",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:nli": "node scripts/nli-smoke-test.mjs",
+    "test:users": "node scripts/user-admin-smoke-test.mjs",
     "db:check": "node scripts/check-db.mjs",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate:v2": "node scripts/migrate_v2.mjs",
     "db:seed-users": "node scripts/seed-users.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },

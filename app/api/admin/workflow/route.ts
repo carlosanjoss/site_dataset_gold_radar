@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/admin-auth";
 import { currentInference, getPool } from "@/lib/db";
+import { reviewPlatformPrioritySql } from "@/lib/review-priority";
+import { MINIMUM_SAMPLE_COVERAGE_PERCENT } from "@/lib/review-targets";
 import { syncNliEligibility, writeAudit } from "@/lib/review-workflow";
 import { serverError } from "@/lib/responses";
 
 const MAX_BATCH_SIZE = 10_000;
-const PLATFORM_COVERAGE_TARGET_PERCENT = 35;
+const PLATFORM_COVERAGE_TARGET_PERCENT = MINIMUM_SAMPLE_COVERAGE_PERCENT;
 
 export async function GET() {
   try {
@@ -47,6 +49,7 @@ export async function GET() {
             b.batch_name,
             b.requested_size,
             b.selected_size,
+            b.target_reviews,
             b.double_review_percent,
             b.status,
             b.created_at,
@@ -58,8 +61,8 @@ export async function GET() {
               WHERE c.decision_status = 'conflict'
             ) AS conflict_items,
             COUNT(i.batch_item_id) FILTER (
-              WHERE c.decision_status = 'awaiting_second'
-            ) AS awaiting_second
+              WHERE c.decision_status IN ('awaiting_reviews', 'awaiting_second')
+            ) AS awaiting_reviews
           FROM gold_sampling_batches b
           LEFT JOIN gold_reviewers creator ON creator.reviewer_id = b.created_by
           LEFT JOIN gold_sampling_batch_items i ON i.batch_id = b.batch_id
@@ -296,7 +299,7 @@ export async function POST(request: Request) {
     if (action === "create_batch") {
       const name = String(body.name || "").trim().slice(0, 120);
       const requestedSize = Number(body.size);
-      const doubleReviewPercent = Number(body.doubleReviewPercent || 0);
+      const targetReviews = Number(body.targetReviews || 1);
       if (!name) {
         return NextResponse.json(
           { error: "Informe um nome para o lote." },
@@ -314,38 +317,17 @@ export async function POST(request: Request) {
         );
       }
       if (
-        !Number.isInteger(doubleReviewPercent) ||
-        doubleReviewPercent < 0 ||
-        doubleReviewPercent > 100
+        !Number.isInteger(targetReviews) ||
+        targetReviews < 1 ||
+        targetReviews > 10
       ) {
         return NextResponse.json(
-          { error: "A porcentagem de revisão dupla deve ficar entre 0 e 100." },
+          { error: "O número de avaliações por item deve ser entre 1 e 10." },
           { status: 400 },
         );
       }
 
       await client.query("BEGIN");
-      if (doubleReviewPercent > 0) {
-        const eligible = await client.query(
-          `
-            SELECT COUNT(*) AS total
-            FROM gold_reviewers
-            WHERE active IS TRUE
-              AND username IS NOT NULL
-              AND double_review_enabled IS TRUE
-          `,
-        );
-        if (Number(eligible.rows[0].total) < 2) {
-          await client.query("ROLLBACK");
-          return NextResponse.json(
-            {
-              error:
-                "Selecione pelo menos dois avaliadores para a revisão dupla.",
-            },
-            { status: 400 },
-          );
-        }
-      }
 
       const inference = currentInference();
       const candidateLimit = Math.min(requestedSize * 20, 200_000);
@@ -435,6 +417,7 @@ export async function POST(request: Request) {
           SELECT analysis_id, platform, stratum, bucket_rank
           FROM ranked
           ORDER BY
+            ${reviewPlatformPrioritySql("platform")},
             CASE WHEN sampled < target THEN 0 ELSE 1 END,
             platform_rank::NUMERIC / GREATEST(target - sampled, 1),
             bucket_rank,
@@ -478,33 +461,20 @@ export async function POST(request: Request) {
         `
           INSERT INTO gold_sampling_batches (
             batch_name, requested_size, selected_size,
-            double_review_percent, created_by
+            target_reviews, double_review_percent, created_by
           )
-          VALUES ($1, $2, $3, $4, $5)
+          VALUES ($1, $2, $3, $4, $5, $6)
           RETURNING batch_id
         `,
         [
           name,
           requestedSize,
           selected.length,
-          doubleReviewPercent,
+          targetReviews,
+          targetReviews > 1 ? 100 : 0, // double_review_percent for backwards compat
           auth.reviewer.reviewerId,
         ],
       );
-      const doubleCount = Math.round(
-        (selected.length * doubleReviewPercent) / 100,
-      );
-      const doubleIndexes = new Set<number>();
-      if (doubleCount > 0) {
-        for (let index = 0; index < doubleCount; index += 1) {
-          doubleIndexes.add(
-            Math.min(
-              selected.length - 1,
-              Math.floor((index * selected.length) / doubleCount),
-            ),
-          );
-        }
-      }
       await client.query(
         `
           INSERT INTO gold_sampling_batch_items (
@@ -521,7 +491,7 @@ export async function POST(request: Request) {
           Number(batch.rows[0].batch_id),
           selected.map((item) => item.analysisId),
           selected.map((item) => item.stratum),
-          selected.map((_, index) => (doubleIndexes.has(index) ? 2 : 1)),
+          selected.map(() => targetReviews),
         ],
       );
       await client.query("COMMIT");
@@ -529,7 +499,7 @@ export async function POST(request: Request) {
         {
           batchId: Number(batch.rows[0].batch_id),
           selectedSize: selected.length,
-          doubleReviewItems: doubleIndexes.size,
+          targetReviews,
         },
         { status: 201 },
       );

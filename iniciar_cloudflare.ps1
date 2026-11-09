@@ -155,8 +155,20 @@ if (-not $appReady) {
 }
 
 $cloudflaredCommand = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
-if (-not $cloudflaredCommand) {
-    throw "cloudflared.exe nao foi encontrado. Instale o Cloudflare Tunnel e tente novamente."
+$cloudflaredPath = if ($cloudflaredCommand) { $cloudflaredCommand.Source } else { $null }
+if (-not $cloudflaredPath) {
+    $cloudflaredCandidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\cloudflared\cloudflared.exe"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\cloudflared.exe")
+    )
+    $cloudflaredPath = $cloudflaredCandidates |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+    if ($cloudflaredPath) {
+        $cloudflaredPath = (Get-Item -LiteralPath $cloudflaredPath).FullName
+    } else {
+        throw "cloudflared.exe nao foi encontrado. Instale o Cloudflare Tunnel e tente novamente."
+    }
 }
 
 $tunnel = $null
@@ -173,7 +185,7 @@ for ($tunnelAttempt = 1; $tunnelAttempt -le 4; $tunnelAttempt++) {
 
     Write-Host "Criando tunel Cloudflare (tentativa $tunnelAttempt de 4)..."
     $tunnel = Start-Process `
-        -FilePath $cloudflaredCommand.Source `
+        -FilePath $cloudflaredPath `
         -ArgumentList @("tunnel", "--url", $systemUrl, "--no-autoupdate") `
         -WorkingDirectory $PSScriptRoot `
         -WindowStyle Hidden `

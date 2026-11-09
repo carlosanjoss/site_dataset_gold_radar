@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedReviewer } from "@/lib/auth";
 import { currentInference, getPool } from "@/lib/db";
 import { NLI_LAYER4_DIMENSIONS } from "@/lib/nli";
+import { reviewPlatformPrioritySql } from "@/lib/review-priority";
 import { serverError, unauthorized } from "@/lib/responses";
 
 const VALID_PLATFORMS = new Set([
@@ -143,6 +144,18 @@ export async function GET(request: NextRequest) {
         { status: 403 },
       );
     }
+
+    // Verificar se as avaliações estão congeladas
+    const freezeCheck = await getPool().query(
+      `SELECT frozen FROM gold_review_freeze WHERE freeze_id = 1`,
+    );
+    if (freezeCheck.rowCount && freezeCheck.rows[0].frozen) {
+      return NextResponse.json(
+        { item: null, stats: null, frozen: true, message: "No momento não há avaliações a se fazer." },
+        { headers: { "Cache-Control": "no-store, max-age=0" } },
+      );
+    }
+
     const platform = request.nextUrl.searchParams.get("platform") || "";
     if (platform && !VALID_PLATFORMS.has(platform)) {
       return NextResponse.json({ error: "Rede social inválida." }, { status: 400 });
@@ -190,7 +203,9 @@ export async function GET(request: NextRequest) {
           JOIN gemma_hate_analyses a ON a.analysis_id = n.analysis_id
           JOIN gold_review_consensus c ON c.analysis_id = n.analysis_id
           WHERE ${existingFilters.join(" AND ")}
-          ORDER BY n.assigned_at
+          ORDER BY
+            ${reviewPlatformPrioritySql("a.platform")},
+            n.assigned_at
           LIMIT 1
         `,
         existingParams,
@@ -245,7 +260,10 @@ export async function GET(request: NextRequest) {
             LEFT JOIN completed_by_platform progress
               ON progress.platform = a.platform
             WHERE ${filters.join(" AND ")}
-            ORDER BY COALESCE(progress.completed, 0), a.analysis_id
+            ORDER BY
+              ${reviewPlatformPrioritySql("a.platform")},
+              COALESCE(progress.completed, 0),
+              a.analysis_id
             FOR UPDATE OF a SKIP LOCKED
             LIMIT 1
           `,

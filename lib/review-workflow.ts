@@ -54,9 +54,9 @@ export async function refreshConsensus(
           analysis_id, decision_status, final_label, final_hate_types,
           resolved_by, resolved_at, updated_at
         )
-        VALUES ($1, 'awaiting_second', NULL, ARRAY[]::TEXT[], NULL, NULL, NOW())
+        VALUES ($1, 'awaiting_reviews', NULL, ARRAY[]::TEXT[], NULL, NULL, NOW())
         ON CONFLICT (analysis_id) DO UPDATE
-        SET decision_status = 'awaiting_second',
+        SET decision_status = 'awaiting_reviews',
             final_label = NULL,
             final_hate_types = ARRAY[]::TEXT[],
             resolved_by = NULL,
@@ -65,7 +65,7 @@ export async function refreshConsensus(
       `,
       [analysisId],
     );
-    return { status: "awaiting_second" as const };
+    return { status: "awaiting_reviews" as const };
   }
 
   const first = normalizedDecision(completed[0]);

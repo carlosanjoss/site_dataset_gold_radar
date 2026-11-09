@@ -30,23 +30,6 @@ export async function POST(request: Request) {
     }
 
     const pool = getPool();
-    const recentFailures = await pool.query(
-      `
-        SELECT COUNT(*)::int AS total
-        FROM gold_login_attempts
-        WHERE attempted_username = $1
-          AND succeeded IS FALSE
-          AND attempted_at > NOW() - INTERVAL '15 minutes'
-      `,
-      [username],
-    );
-    if (Number(recentFailures.rows[0].total) >= 8) {
-      return NextResponse.json(
-        { error: "Muitas tentativas. Aguarde 15 minutos e tente novamente." },
-        { status: 429 },
-      );
-    }
-
     const result = await pool.query(
       `
         SELECT

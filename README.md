@@ -4,34 +4,29 @@ Aplicação independente para especialistas confirmarem ou corrigirem as
 classificações de discurso de ódio produzidas pelo Gemma. O sistema não altera
 o dashboard existente nem sobrescreve as previsões originais.
 
-## Como iniciar localmente
+## Como iniciar localmente com Docker
 
-Dê dois cliques em:
-
-```text
-ABRIR_SISTEMA.cmd
-```
-
-O iniciador prepara o banco, aguarda o servidor ficar disponível e abre o
-navegador automaticamente. Mantenha a janela do terminal aberta enquanto os
-especialistas estiverem avaliando.
-
-No PowerShell:
-
-```powershell
-cd "C:\Users\carlo\OneDrive\Documents\ESTUDOS\MESTRADO\Trabalho Radar Ódio\sistema_revisao_hate"
-.\iniciar_sistema.ps1
-```
-
-Abra o endereço exibido no terminal, normalmente:
+Dê dois cliques em `ABRIR_DOCKER.cmd`. O script inicia o PostgreSQL, MongoDB e
+Redis oficiais de `social_data_pipeline`, prepara a conexão sem imprimir
+credenciais, constrói o site e aguarda a resposta em:
 
 ```text
 http://localhost:3000
 ```
 
-O projeto procura `POSTGRES_URI` em `.env.local`, `.env` e, como alternativa,
-em `../social_data_pipeline/.env`. Portanto, nesta máquina ele usa
-automaticamente o banco `radar_odio` já configurado.
+Para desligar, dê dois cliques em `DESLIGAR_DOCKER.cmd`. Os volumes e os dados
+restaurados são preservados. Os contêineres usam `restart: unless-stopped` e o
+Docker Desktop está configurado para iniciar com a sessão do Windows.
+
+No PowerShell, os comandos equivalentes são:
+
+```powershell
+.\iniciar_docker.ps1
+.\desligar_docker.ps1
+```
+
+O site, o dashboard, o Gemma e o NLI usam o mesmo PostgreSQL oficial definido
+em `../social_data_pipeline/.env`; não há um segundo banco do site.
 
 ## Fluxo do avaliador
 
@@ -69,22 +64,14 @@ número e caractere especial.
 
 ## Acesso público pelo Cloudflare
 
-Dê dois cliques em:
+Dê dois cliques em `ABRIR_COM_CLOUDFLARE_DOCKER.cmd`. Se a variável
+`CLOUDFLARE_TUNNEL_TOKEN` existir, o script usa o túnel permanente; caso
+contrário, cria um Quick Tunnel temporário. O endereço só é informado depois
+que o conector registra uma conexão com a borda Cloudflare.
 
-```text
-ABRIR_COM_CLOUDFLARE.cmd
-```
-
-O iniciador prepara o banco, gera uma versão de produção do sistema na porta
-3001 e cria um endereço HTTPS público terminado em `trycloudflare.com`. Copie o
-endereço mostrado e envie aos avaliadores. Mantenha a janela aberta enquanto o
-acesso externo estiver ativo.
-
-Esse endereço é temporário e muda quando o túnel é reiniciado. Um endereço fixo
-exige uma conta Cloudflare, um domínio associado e um túnel nomeado.
-
-Para encerrar o acesso público e o servidor de produção, dê dois cliques em
-`DESATIVAR_SITE.cmd`. A execução local em `http://localhost:3000` é preservada.
+O Cloudflare Tunnel exige saída TCP ou UDP pela porta 7844. Se essa porta for
+bloqueada pela rede, libere-a e execute o iniciador novamente. O site local
+continua disponível mesmo sem o túnel.
 
 ## Estruturas criadas no PostgreSQL
 
@@ -108,6 +95,59 @@ view gold. Conflitos não entram no dataset final antes da decisão do admin.
 Outros computadores podem abrir o endereço `http://IP_DESTA_MAQUINA:3000`.
 Somente esta máquina precisa acessar o PostgreSQL; os avaliadores acessam a
 aplicação pelo navegador.
+
+## Execução em Docker na máquina virtual
+
+O ambiente Docker contém a aplicação Next.js, PostgreSQL persistente e duas
+opções de HTTPS: domínio próprio com Caddy ou túnel nomeado do Cloudflare.
+
+Antes de copiar o projeto, gere o backup do banco atual dando dois cliques em:
+
+```text
+CRIAR_BACKUP_DOCKER.cmd
+```
+
+O comando cria `backups/radar_odio.dump`. O banco atual tem aproximadamente
+1,2 GB antes da compactação; o dump contém dados do projeto e deve ser
+transferido por um canal privado.
+
+Na máquina virtual, copie `.env.docker.example` para `.env.docker`, troque a
+senha do PostgreSQL e configure uma das opções de acesso HTTPS.
+
+Com domínio apontado para o IP público da VM:
+
+```bash
+docker compose --env-file .env.docker --profile https up -d --build
+```
+
+Com um túnel nomeado configurado no painel Cloudflare para encaminhar ao
+serviço `http://app:3000`:
+
+```bash
+docker compose --env-file .env.docker --profile cloudflare up -d --build
+```
+
+Para acompanhar a inicialização:
+
+```bash
+docker compose --env-file .env.docker logs -f app database
+```
+
+Para atualizar o site após copiar uma nova versão do projeto:
+
+```bash
+docker compose --env-file .env.docker up -d --build app
+```
+
+Para parar sem apagar o banco:
+
+```bash
+docker compose --env-file .env.docker down
+```
+
+Não use `docker compose down -v` em produção: a opção `-v` remove o volume do
+PostgreSQL. O backup é restaurado automaticamente apenas quando o volume é
+criado pela primeira vez.
 
 ## Comandos de validação
 

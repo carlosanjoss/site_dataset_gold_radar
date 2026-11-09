@@ -13,7 +13,35 @@ ALTER TABLE gold_reviewers
     ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'reviewer',
     ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS double_review_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS double_review_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS review_target INTEGER NOT NULL DEFAULT 0
+        CHECK (review_target BETWEEN 0 AND 10000000);
+
+WITH coverage AS (
+    SELECT CEIL(COUNT(*) * 0.25)::INTEGER AS minimum_target
+    FROM gemma_hate_analyses
+    WHERE status = 'success'
+), active_reviewers AS (
+    SELECT COUNT(*)::INTEGER AS total
+    FROM gold_reviewers
+    WHERE active IS TRUE
+      AND username IS NOT NULL
+), allocation AS (
+    SELECT GREATEST(
+        CEIL(
+            coverage.minimum_target::NUMERIC /
+            GREATEST(active_reviewers.total, 1)
+        )::INTEGER,
+        1
+    ) AS individual_target
+    FROM coverage, active_reviewers
+)
+UPDATE gold_reviewers reviewer
+SET review_target = allocation.individual_target
+FROM allocation
+WHERE reviewer.active IS TRUE
+  AND reviewer.username IS NOT NULL
+  AND reviewer.review_target = 0;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gold_reviewers_username
     ON gold_reviewers (LOWER(username))

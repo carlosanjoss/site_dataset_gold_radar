@@ -1,0 +1,1117 @@
+\chapter{Metodologia das camadas 3 e 4 com modelos NLI}
+
+% Requer os comandos de citacao fornecidos por abntex2cite no documento principal.
+% Requer url ou hyperref no preambulo principal para o comando \url.
+% Requer o pacote amsmath no preambulo principal para os ambientes e operadores matematicos.
+
+\section{Escopo e objetivos}
+\label{sec:escopo-objetivos}
+
+As Camadas 3 e 4 são etapas posteriores do pipeline do Radar do Ódio. Elas recebem exclusivamente os registros já encaminhados pelas etapas anteriores e não repetem a detecção binária de discurso de ódio nem a identificação de categorias de preconceito. Este capítulo limita-se, portanto, à metodologia para estimar intensidade discursiva na Camada 3 e ambivalência discursiva na Camada 4.
+
+O objetivo é estabelecer um protocolo prospectivo, reproduzível e auditável para desenvolvimento, inferência zero-shot com checkpoints NLI, calibração e validação independente das duas camadas. A metodologia ainda precisa ser executada. Explorações anteriores que não tenham separação adequada entre desenvolvimento e teste serão tratadas somente como diagnóstico preliminar. A existência de um checkpoint treinado para Natural Language Inference (NLI) não demonstra validade para estas tarefas, e nenhum resultado final está disponível no estado atual. Mesmo resultados zero-shot futuramente favoráveis não substituirão avaliação independente em teste congelado.
+
+\section{Definição operacional das camadas}
+\label{sec:definicao-operacional}
+
+\subsection{Camada 3 Intensidade discursiva}
+
+A Camada 3 estima a gravidade discursiva do conteúdo. A proposta inicial de cinco níveis, inspirada na progressão de manifestações do preconceito discutida por \citeonline{allport1954}, será considerada uma taxonomia candidata, e não uma escala já validada. A adaptação de categorias comportamentais para fenômenos linguísticos exige evidência de validade de conteúdo, confiabilidade entre anotadores, ordenação empírica e separabilidade entre níveis. Em particular, os intervalos numéricos de score presentes em versões históricas não serão reutilizados como thresholds sem seleção exclusiva no conjunto de validação.
+
+Serão comparadas duas formulações. Na primeira, a intensidade é uma variável ordinal discreta \(Y^{(3)}\in\{1,\ldots,K\}\), com custo de erro crescente conforme aumenta a distância entre o nível verdadeiro e o previsto. Na segunda, o sistema estima um escore contínuo \(s^{(3)}\in[0,1]\), posteriormente mapeado para níveis por pontos de corte selecionados em validação. A escolha entre as formulações dependerá da qualidade das anotações, da monotonicidade observada, da estabilidade dos pontos de corte e do desempenho em métricas ordinais. A abordagem de decompor classes ordenadas em decisões cumulativas fornece uma referência metodológica para essa comparação \cite{frankhall2001}.
+
+Como hipótese operacional inicial, serão avaliados os cinco níveis da Tabela~\ref{tab:taxonomia-c3}. Os limites são semânticos: a mera presença de um grupo social não eleva a intensidade, e menções descritivas, históricas, jornalísticas, críticas ou de denúncia não recebem gravidade adicional sem endosso, ameaça ou legitimação do dano.
+
+\begin{table}[htbp]
+\centering
+\caption{Taxonomia candidata de intensidade discursiva}
+\label{tab:taxonomia-c3}
+\begin{tabular}{|p{0.09\textwidth}|p{0.20\textwidth}|p{0.58\textwidth}|}
+\hline
+\textbf{Nível} & \textbf{Rótulo operacional} & \textbf{Critério semântico candidato} \\
+\hline
+N1 & Depreciação implícita & Estereotipação, essencialização ou inferiorização indireta, sem ataque explícito, exclusão defendida ou dano legitimado. \\
+\hline
+N2 & Hostilidade explícita & Rejeição, humilhação ou ataque verbal dirigido a pessoa ou grupo, ainda sem defesa de privação de direitos ou violência física. \\
+\hline
+N3 & Exclusão ou desumanização & Defesa de segregação, tratamento desigual ou negação de direitos, dignidade ou humanidade, sem ameaça física concreta ou convocação à violência. \\
+\hline
+N4 & Ameaça ou violência & Ameaça, desejo, celebração, legitimação ou convocação de violência física não formulada como eliminação sistemática do grupo. \\
+\hline
+N5 & Eliminação ou dano extremo & Defesa, celebração ou convocação da eliminação física, do extermínio ou de dano extremo e sistemático contra o grupo. \\
+\hline
+\end{tabular}
+\end{table}
+
+Desumanização merece atenção própria porque pode assumir formas animalizantes ou mecanizantes \cite{haslam2006}. Sua posição ordinal não será presumida apenas pela ocorrência de uma metáfora: será necessário distinguir negação de humanidade, insulto figurado, citação, relato histórico e denúncia. A relação entre desumanização, legitimação do dano e escalada de gravidade será verificada na anotação e na análise de erros.
+
+\subsection{Camada 4 Ambivalência discursiva}
+
+A Camada 4 identifica situações em que a posição discursiva do autor ou o significado pragmático relevante não pode ser determinado adequadamente pela leitura literal de uma proposição isolada. Entre os fenômenos candidatos estão ironia, sarcasmo, citação, fala atribuída a terceiros, negação, contra-discurso, denúncia, distanciamento discursivo, implicitude e sinais que sustentam interpretações concorrentes. Esses fenômenos não serão convertidos automaticamente em classes mutuamente exclusivas.
+
+Serão comparadas quatro estruturas de saída: binária, multiclasse, multirrótulo e hierárquica. A formulação de referência será uma decisão binária sobre ambivalência acompanhada de rótulos auxiliares multirrótulo para os fenômenos observados. A alternativa hierárquica separará três questões: suficiência do contexto, posição do autor e mecanismo discursivo. Essa separação evita confundir ambivalência presente no texto com incerteza causada por contexto ausente. Quando a decisão depender de conversa anterior, conteúdo citado não disponível, meme, evento público ou conhecimento compartilhado não recuperado, a saída preferível será \emph{incerto/abstenção}, e não a atribuição artificial de ambivalência.
+
+Propostas históricas que empreguem o nome Camada 4 para outras dimensões discursivas serão inventariadas durante a harmonização, mas não substituirão esta definição. Seus rótulos somente poderão ser aproveitados como variáveis auxiliares se houver correspondência semântica documentada e independente do gold standard de ambivalência.
+
+\section{Perguntas de pesquisa e hipóteses}
+\label{sec:perguntas-hipoteses}
+
+O protocolo responderá às seguintes perguntas.
+
+\begin{description}
+\item[\textbf{RQ1}] Modelos NLI discriminam os níveis de intensidade em português melhor do que baselines transparentes no teste congelado?
+\item[\textbf{RQ2}] Uma formulação ordinal ou contínua produz menos erros entre níveis distantes do que uma classificação nominal?
+\item[\textbf{RQ3}] Quanto o desempenho e o ranking dos modelos variam entre templates semanticamente equivalentes?
+\item[\textbf{RQ4}] A Camada 4 identifica ambivalência discursiva ou se apoia em marcadores lexicais superficiais?
+\item[\textbf{RQ5}] Quais fenômenos de ambivalência concentram falsos positivos, falsos negativos e abstenções?
+\item[\textbf{RQ6}] O desempenho obtido no Reddit se mantém em períodos posteriores e em outras plataformas?
+\item[\textbf{RQ7}] Como o desbalanceamento altera seleção de checkpoint, definição de thresholds, calibração e incerteza das métricas?
+\item[\textbf{RQ8}] A calibração e a abstenção permitem controlar o risco entre previsões aceitas e a carga de revisão humana?
+\item[\textbf{RQ9}] Os resultados são estáveis entre checkpoints, templates, plataformas, períodos e reexecuções determinísticas?
+\item[\textbf{RQ10}] Que evidência permite classificar cada camada como não apta, experimental com revisão humana ou apta para uso operacional monitorado?
+\end{description}
+
+As hipóteses científicas serão testadas contra alternativas nulas e critérios registrados antes da avaliação final.
+
+\begin{description}
+\item[\textbf{H1}] Ao menos uma configuração NLI zero-shot selecionada somente em validação supera os baselines de classe majoritária e regras lexicais em Macro-F1 no teste congelado.
+\item[\textbf{H2}] A formulação ordinal ou contínua reduz o erro absoluto médio entre níveis e aumenta o \(\kappa\) ponderado em relação à formulação nominal, sem redução material previamente definida no Macro-F1.
+\item[\textbf{H3}] Alterações semanticamente equivalentes no template produzem variação mensurável de desempenho; a amplitude será comparada com uma tolerância operacional pré-registrada.
+\item[\textbf{H4}] Na Camada 4, a inclusão de contexto disponível melhora o desempenho nos estratos anotados como dependentes de contexto em relação ao uso do comentário isolado.
+\item[\textbf{H5}] A calibração pós-hoc selecionada em validação reduz ECE e Brier Score sem deterioração material das métricas de decisão pré-registradas.
+\item[\textbf{H6}] A transferência do Reddit para pelo menos uma plataforma externa ou período posterior apresenta deterioração estatisticamente detectável em alguma métrica principal.
+\item[\textbf{H7}] Uma política de abstenção baseada em score calibrado e margem reduz o risco seletivo à medida que diminui a cobertura, dentro do intervalo operacional avaliado.
+\item[\textbf{H8}] Uma regra baseada na margem entre entailment e contradiction supera, em validação, a regra simples de maior entailment; caso a evidência não sustente essa diferença, permanecerá a regra mais simples.
+\end{description}
+
+\section{Formulação das tarefas como NLI}
+\label{sec:formulacao-nli}
+
+O Reconhecimento de Implicação Textual e sua formulação moderna como NLI modelam a relação semântica entre dois textos \cite{dagan2006,bowman2015}. Para cada registro \(i\), define-se
+
+\[
+x_i=(p_i,h_i),
+\]
+
+em que \(p_i\) é a premissa, composta pelo texto analisado e, nos experimentos contextuais, por contexto delimitado e identificado; \(h_i\) é uma hipótese em linguagem natural. A saída tradicional é
+
+\[
+y_i\in\{\text{entailment},\text{neutral},\text{contradiction}\},
+\]
+
+com logits \((z_{i,E},z_{i,N},z_{i,C})\) e scores normalizados
+
+\[
+q_i(r)=\frac{\exp(z_{i,r})}{\sum_{u\in\{E,N,C\}}\exp(z_{i,u})},
+\qquad r\in\{E,N,C\}.
+\]
+
+SNLI e MultiNLI consolidaram corpora de grande escala para essa tarefa \cite{bowman2015,williams2018}; XNLI estendeu conjuntos de desenvolvimento e teste para avaliação multilíngue \cite{conneau2018xnli}. O português, contudo, não integra os idiomas originais de XNLI. Assim, desempenho em XNLI não será apresentado como evidência direta para português brasileiro.
+
+Nesta notação, \(P(E\mid p_i,h_i)=q_i(E)\), \(P(N\mid p_i,h_i)=q_i(N)\) e \(P(C\mid p_i,h_i)=q_i(C)\). Entailment representa suporte da premissa à hipótese; contradiction, evidência contra ela; e neutral, insuficiência para estabelecer qualquer das duas relações. A classe neutral será preservada como sinal informativo e não convertida automaticamente em ausência do fenômeno.
+
+A conversão de classificação temática em NLI é apoiada por trabalhos de zero-shot baseados em hipóteses textuais \cite{yin2019,laurer2024}. Ela não autoriza selecionar simplesmente a hipótese com maior \(q_i(E)\). Serão comparadas as seguintes funções de score para uma classe ou fenômeno \(k\), com \(R_k\) paráfrases:
+
+\[
+a_{ik}=\frac{1}{R_k}\sum_{r=1}^{R_k}q_i(E\mid p_i,h_{kr}),
+\]
+
+\[
+d_{ik}=\frac{1}{R_k}\sum_{r=1}^{R_k}
+\left[q_i(E\mid p_i,h_{kr})-q_i(C\mid p_i,h_{kr})\right],
+\]
+
+e uma normalização competitiva entre hipóteses,
+
+\[
+\pi_{ik}=\frac{\exp(a_{ik}/T)}{\sum_{j=1}^{K}\exp(a_{ij}/T)},
+\qquad T>0.
+\]
+
+O valor de \(T\), os thresholds, a função de agregação e a possibilidade de excluir \(q_i(N)\) da normalização serão escolhas de validação. Também serão testadas média, mediana e mínimo entre paráfrases, pois a média pode esconder uma formulação instável e o máximo pode favorecer uma hipótese espúria.
+
+\subsection{Decisão candidata para a Camada 3}
+
+Na formulação nominal, a classe candidata é \(\arg\max_k\pi_{ik}\), sujeita a threshold e abstenção. Na formulação ordinal cumulativa, serão construídas hipóteses para os eventos \(Y^{(3)}\geq k\), \(k=2,\ldots,K\). Os scores brutos deverão satisfazer
+
+\[
+r_{i2}\geq r_{i3}\geq\cdots\geq r_{iK}.
+\]
+
+Quando essa propriedade for violada, serão comparadas duas estratégias sem atualização dos pesos do modelo: projeção isotônica ajustada apenas em validação e regra de decisão monotônica aplicada aos escores congelados. Um escore ordinal candidato é
+
+\[
+o_i=1+\sum_{k=2}^{K}\widetilde r_{ik},
+\]
+
+em que \(\widetilde r_{ik}\) denota o score cumulativo calibrado e monotônico. Na formulação contínua, \(o_i\) será reescalado para \([0,1]\), e os pontos de corte serão selecionados em validação considerando Macro-F1, \(\kappa\) ponderado, MAE ordinal, calibração e carga de revisão. Não serão preservados automaticamente pontos de corte de documentos exploratórios.
+
+\subsection{Decisão candidata para a Camada 4}
+
+Para a Camada 4, haverá hipóteses sobre endosso, rejeição, atribuição, citação, denúncia, negação, ironia, conflito interpretativo e indeterminação. Seja \(A_i\) o agregado das hipóteses que indicam ambivalência pragmática e \(L_i\) o agregado das hipóteses que indicam posição autoral suficientemente clara. Define-se a margem candidata
+
+\[
+m_i=A_i-L_i.
+\]
+
+A decisão binária poderá usar \(m_i\), um calibrador ajustado sobre os vetores de scores NLI, sem alterar os pesos do checkpoint, ou uma regra hierárquica. O caso será enviado à abstenção se a maior probabilidade calibrada ficar abaixo de \(\tau\), se \(|m_i|<\delta\), se houver violação de consistência entre paráfrases ou se o anotador de referência indicar contexto necessário ausente. Os valores \(\tau\) e \(\delta\) serão escolhidos em validação. Citação, negação ou sarcasmo não bastam, isoladamente, para rotular ambivalência: uma citação acompanhada de condenação inequívoca pode expressar posição clara.
+
+\section{Construção das hipóteses em linguagem natural}
+\label{sec:hipoteses-linguagem}
+
+As hipóteses serão redigidas em português brasileiro, com uma única afirmação verificável por vez. Cada hipótese terá versões positiva, contrastiva e neutra quando a distinção contribuir para a decisão. Os templates não conterão o nome abstrato do rótulo como único conteúdo. A equipe revisará circularidade, pressupostos sobre grupos sociais, dependência de palavras-gatilho e sobreposição entre níveis. Artefatos de anotação podem permitir a previsão do rótulo a partir da hipótese sem leitura da premissa; por isso, será executado um controle que fornece somente as hipóteses ao classificador \cite{gururangan2018}.
+
+\subsection{Hipóteses candidatas da Camada 3}
+
+Cada linha da Tabela~\ref{tab:hipoteses-c3} contém três formulações semanticamente próximas, critérios positivos e negativos e a principal fronteira ordinal. Elas constituem famílias candidatas, não a configuração final.
+
+\begin{table}[htbp]
+\centering
+\caption{Famílias candidatas de hipóteses para intensidade}
+\label{tab:hipoteses-c3}
+\begin{tabular}{|p{0.06\textwidth}|p{0.27\textwidth}|p{0.27\textwidth}|p{0.27\textwidth}|}
+\hline
+\textbf{Nível} & \textbf{Hipótese principal e paráfrases} & \textbf{Critérios positivos e negativos} & \textbf{Fronteira e confusões} \\
+\hline
+N1 & P: O texto atribui ao grupo uma característica depreciativa como se fosse natural. A: O texto generaliza uma inferioridade ou inadequação do grupo. B: O texto usa estereótipo negativo sem defender exclusão ou dano. & Positivos: essencialização, estereótipo ou inferiorização implícita. Negativos: descrição estrutural, menção neutra, contraexemplo ou citação criticada. & Separar de N2 pela ausência de ataque ou rejeição explícita; evitar confundir crítica a conduta individual com generalização identitária. \\
+\hline
+N2 & P: O texto humilha, rejeita ou ataca verbalmente uma pessoa ou grupo por sua identidade. A: O autor manifesta hostilidade explícita contra o grupo. B: O grupo é tratado como socialmente indesejável, sem defesa de retirar direitos ou causar dano físico. & Positivos: insulto dirigido, repulsa, ridicularização e rejeição. Negativos: humor sem alvo identitário, discordância política específica e relato sem endosso. & Separar de N1 pela explicitude e de N3 pela ausência de exclusão normativa, privação de direitos ou negação de humanidade. \\
+\hline
+N3 & P: O texto sustenta que o grupo merece exclusão, tratamento desigual ou perda de direitos. A: O texto nega dignidade ou humanidade plena ao grupo. B: O texto apresenta segregação ou marginalização do grupo como justa ou benéfica. & Positivos: segregação, negação de direitos, desumanização e discriminação legitimada. Negativos: relato de violação, condenação da exclusão e metáfora sem alvo humano. & Separar de N2 pela consequência normativa e de N4 pela ausência de ameaça ou violência física legitimada. \\
+\hline
+N4 & P: O texto ameaça, deseja, celebra ou incentiva violência física contra uma pessoa ou grupo. A: O texto apresenta agressão física como resposta justa ou necessária. B: O texto convoca outras pessoas a causar dano físico ao alvo. & Positivos: ameaça, desejo de agressão, celebração ou incitação. Negativos: notícia, alerta de risco, condenação e mobilização não violenta. & Separar de N3 pelo dano físico e de N5 pela ausência de eliminação sistemática ou totalizante. \\
+\hline
+N5 & P: O texto defende ou convoca a eliminação física de um grupo. A: O desaparecimento ou extermínio do grupo é apresentado como desejável ou necessário. B: O texto celebra dano extremo e sistemático contra o grupo como solução. & Positivos: extermínio, erradicação física, letalidade sistemática ou eliminação totalizante. Negativos: memória histórica, denúncia, uso metafórico não físico e risco de extinção descrito sem endosso. & Separar de N4 pela finalidade eliminatória ou pelo caráter sistemático; examinar metáforas e citações para evitar falsos extremos. \\
+\hline
+\end{tabular}
+\end{table}
+
+Além das hipóteses por nível, a formulação ordinal cumulativa terá três versões para cada fronteira \(k\): ``O conteúdo alcança pelo menos o nível semântico descrito para \(k\)'', ``O dano legitimado no texto é igual ou mais grave que o definido para \(k\)'' e uma descrição concreta da menor condição suficiente para \(Y^{(3)}\geq k\). A redação final substituirá a referência abstrata a \(k\) por critérios semânticos completos.
+
+\subsection{Hipóteses candidatas da Camada 4}
+
+A Tabela~\ref{tab:templates-c4} define três templates por fenômeno principal. Durante a anotação, os fenômenos poderão coexistir. A classe binária final será derivada separadamente para não converter automaticamente uma marca formal, como aspas, em ambivalência.
+
+\begin{table}[htbp]
+\centering
+\caption{Famílias de templates para fenômenos de ambivalência}
+\label{tab:templates-c4}
+\begin{tabular}{|p{0.17\textwidth}|p{0.24\textwidth}|p{0.24\textwidth}|p{0.24\textwidth}|}
+\hline
+\textbf{Fenômeno} & \textbf{Template 1} & \textbf{Template 2} & \textbf{Template 3} \\
+\hline
+Endosso & O autor assume como própria a proposição ofensiva apresentada. & A posição do autor concorda com a proposição reproduzida. & O texto oferece evidência de que o autor apoia a afirmação expressa. \\
+\hline
+Rejeição ou denúncia & O autor rejeita ou condena a proposição ofensiva apresentada. & O conteúdo ofensivo é reproduzido para ser criticado ou denunciado. & A posição do autor se opõe de modo claro à afirmação citada. \\
+\hline
+Citação ou atribuição & A proposição ofensiva é atribuída a outra pessoa ou fonte. & O autor relata fala alheia em vez de afirmá-la como própria. & O trecho ofensivo aparece como conteúdo citado cuja autoria é externa. \\
+\hline
+Negação & Uma negação altera ou cancela a leitura literal da proposição ofensiva. & O texto nega que a afirmação ofensiva seja verdadeira ou aceitável. & A polaridade da proposição depende de um operador de negação. \\
+\hline
+Ironia ou sarcasmo & Há indícios de que o sentido pretendido difere do sentido literal. & O texto usa ironia ou sarcasmo de modo relevante para a posição do autor. & A interpretação literal entra em conflito com sinais pragmáticos do enunciado. \\
+\hline
+Contra-discurso & O autor reproduz discurso ofensivo para contestá-lo. & O texto responde a uma afirmação hostil com oposição ou correção. & A ocorrência ofensiva integra uma intervenção de contra-discurso. \\
+\hline
+Implicitude & A posição do autor depende de inferência pragmática não expressa diretamente. & O texto sugere uma posição sem declará-la de forma literal. & O conteúdo relevante é implícito e admite mais de uma reconstrução plausível. \\
+\hline
+Conflito interpretativo & Sinais do texto sustentam interpretações incompatíveis da posição do autor. & Não há evidência suficiente para escolher entre endosso e rejeição. & A posição discursiva permanece indeterminada após considerar os sinais disponíveis. \\
+\hline
+Contexto ausente & A decisão exige contexto conversacional que não está disponível. & A fala citada ou o referente necessário não pode ser recuperado. & O texto isolado não contém informação suficiente para atribuir uma posição ao autor. \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Tabela integrada de hipóteses e decisões}
+
+\begin{table}[htbp]
+\centering
+\caption{Resumo das hipóteses NLI e regras candidatas}
+\label{tab:resumo-hipoteses}
+\scriptsize
+\begin{tabular}{|p{0.04\textwidth}|p{0.09\textwidth}|p{0.13\textwidth}|p{0.13\textwidth}|p{0.10\textwidth}|p{0.09\textwidth}|p{0.12\textwidth}|p{0.14\textwidth}|}
+\hline
+\textbf{Camada} & \textbf{Fenômeno} & \textbf{Hipótese principal} & \textbf{Paráfrase candidata} & \textbf{Finalidade} & \textbf{Saída NLI} & \textbf{Regra candidata} & \textbf{Ambiguidades} \\
+\hline
+3 & Depreciação implícita & O texto atribui ao grupo uma característica depreciativa como se fosse natural. & O texto generaliza uma inferioridade ou inadequação do grupo. & Testar N1. & Entailment e margem E--C. & Comparar com as demais famílias e abster sob baixa confiança. & Crítica individual, menção neutra e relato sem endosso. \\
+\hline
+3 & Hostilidade explícita & O texto humilha, rejeita ou ataca verbalmente o alvo por sua identidade. & O autor manifesta hostilidade explícita sem defender dano físico. & Testar N2. & Entailment e margem E--C. & Comparar com N1 e N3. & Estereótipo implícito versus exclusão normativa. \\
+\hline
+3 & Exclusão ou desumanização & O texto sustenta que o grupo merece exclusão, tratamento desigual ou perda de direitos. & O texto nega dignidade ou humanidade plena ao grupo. & Testar N3. & Entailment e margem E--C. & Comparar com N2 e N4. & Metáfora, denúncia e ameaça não física. \\
+\hline
+3 & Ameaça ou violência & O texto ameaça, deseja, celebra ou incentiva violência física contra o alvo. & O texto apresenta agressão física como resposta justa ou necessária. & Testar N4. & Entailment e margem E--C. & Comparar com N3 e N5. & Ameaça figurada, notícia e condenação. \\
+\hline
+3 & Eliminação extrema & O texto defende ou convoca a eliminação física de um grupo. & O extermínio do grupo é apresentado como desejável ou necessário. & Testar N5. & Entailment e margem E--C. & Comparar com N4. & Uso metafórico, relato histórico e escopo não coletivo. \\
+\hline
+4 & Posição clara & O autor assume como própria a proposição apresentada. & A posição do autor concorda com a proposição reproduzida. & Estimar endosso. & Entailment de endosso e rejeição. & Contrastar evidências opostas. & Citação e negação podem manter posição clara. \\
+\hline
+4 & Citação ou denúncia & A proposição é atribuída a outra pessoa. & O conteúdo é reproduzido para ser criticado ou denunciado. & Separar voz autoral de relato. & Entailment e neutral. & Combinar atribuição, endosso e rejeição. & Aspas não provam distanciamento. \\
+\hline
+4 & Ironia e indeterminação & O sentido pretendido diverge do literal. & Sinais sustentam interpretações concorrentes. & Estimar ambivalência. & Entailment, neutral e consistência. & Usar \(m_i\) calibrado ou abster. & Depende de contexto pragmático. \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Sensibilidade aos templates}
+
+Para cada fenômeno, os três templates serão aplicados à mesma partição e ao mesmo checkpoint. Seja \(M_t\) a métrica obtida com o template \(t\). Serão reportados média, desvio-padrão, amplitude e ranking dos modelos, com
+
+\[
+\Delta_{\mathrm{template}}=\max_t M_t-\min_t M_t.
+\]
+
+Também serão avaliados ensembles de paráfrases e consistência item a item. A seleção do template ocorrerá somente em validação. O teste congelado não será consultado para redigir, descartar ou combinar hipóteses.
+
+\section{Modelos e baselines}
+\label{sec:modelos-baselines}
+
+XLM-R é um encoder multilíngue pré-treinado em cem idiomas e avaliado, entre outras tarefas, em transferência para XNLI \cite{conneau2020xlmr}. DeBERTaV3 introduz pretraining por detecção de tokens substituídos e possui variante multilíngue \cite{he2021debertav3}. Esses artigos descrevem arquiteturas, não validam as tarefas do Radar. A comparação usará revisões imutáveis dos checkpoints e registrará hashes, tokenizer, ordem dos rótulos NLI e licença.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelos NLI candidatos}
+\label{tab:modelos-candidatos}
+\begin{tabular}{|p{0.25\textwidth}|p{0.16\textwidth}|p{0.20\textwidth}|p{0.26\textwidth}|}
+\hline
+\textbf{Checkpoint} & \textbf{Arquitetura e idiomas} & \textbf{Treinamento NLI documentado} & \textbf{Justificativa e limitação} \\
+\hline
+\texttt{joeddav/xlm-roberta-large-xnli} & XLM-R large, encoder multilíngue. & MultiNLI e XNLI, conforme model card oficial \cite{joeddavmodelcard}. & Baseline de alta capacidade. XNLI não contém português; custo de memória e transferência indireta devem ser medidos. \\
+\hline
+\texttt{MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7} & mDeBERTa-v3 base, encoder multilíngue. & XNLI e corpus NLI traduzido para 26 idiomas, incluindo português, conforme model card \cite{laurermdebertacard}. & Candidato com exposição NLI em português. A tradução automática pode introduzir artefatos e diferença de domínio. \\
+\hline
+\texttt{MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli} & MiniLM multilíngue destilado de XLM-R large. & MultiNLI e desenvolvimento de XNLI, conforme model card \cite{laurerminilmcard}. & Baseline de eficiência para medir latência e memória. Português depende de transferência multilíngue e pode perder capacidade pela destilação. \\
+\hline
+\end{tabular}
+\end{table}
+
+Antes de qualquer execução, será verificado se o identificador ainda resolve para o mesmo commit. Checkpoints adicionais somente serão incluídos se houver artigo ou model card verificável, mapeamento inequívoco de \((E,N,C)\), licença compatível e suporte técnico para inferência reproduzível. Modelos apenas adaptados para classificação genérica não serão descritos como modelos NLI.
+
+Os baselines serão: classe majoritária; regras lexicais mínimas pré-especificadas; e regra NLI zero-shot sem calibração baseada no maior entailment. Para intensidade, será acrescentada uma regra ordinal simples sem ajuste de pesos. Para ambivalência, haverá baseline que usa somente marcadores superficiais de aspas, negação e ironia. Esses controles permitem verificar se a inferência NLI produz ganho além da prevalência ou de pistas formais sem introduzir treinamento supervisionado nos dados do Radar.
+
+\section{Preparação e auditoria dos dados}
+\label{sec:preparacao-auditoria}
+
+\subsection{Inventário, extração e minimização}
+
+Cada fonte receberá identificador de versão, consulta de extração, intervalo temporal, plataforma, tipo de conteúdo e contagens antes e depois de cada filtro. O identificador analítico deverá ser estável e separado de identificadores pessoais. Serão removidos campos que não contribuam para a pesquisa; usernames, nomes de exibição, URLs com parâmetros pessoais e outros identificadores serão pseudonimizados ou descartados. O acesso ao texto integral será limitado ao necessário para anotação, auditoria e análise de erro.
+
+Serão documentados critérios de inclusão e exclusão para textos vazios, removidos, apagados, sem rótulo, com rótulo inválido, fora do idioma-alvo, spam e atividade automatizada quando identificável. Não se removerão automaticamente emojis, hashtags, pontuação, caixa alta, quebras de linha, marcas de citação ou indicadores de sarcasmo, pois esses sinais podem alterar intensidade e ambivalência. URLs e menções poderão ser substituídas por marcadores consistentes, preservando sua presença. A normalização Unicode será registrada e comparada com uma condição de texto minimamente processado.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: inventário dos datasets}
+\label{tab:modelo-inventario}
+\begin{tabular}{|p{0.15\textwidth}|p{0.12\textwidth}|p{0.14\textwidth}|p{0.13\textwidth}|p{0.16\textwidth}|p{0.16\textwidth}|}
+\hline
+\textbf{Dataset e versão} & \textbf{Plataforma} & \textbf{Período} & \textbf{Registros brutos} & \textbf{Registros elegíveis} & \textbf{Observações} \\
+\hline
+A preencher & A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: distribuição dos rótulos}
+\label{tab:modelo-distribuicao}
+\begin{tabular}{|p{0.14\textwidth}|p{0.16\textwidth}|p{0.15\textwidth}|p{0.15\textwidth}|p{0.20\textwidth}|}
+\hline
+\textbf{Camada} & \textbf{Rótulo ou fenômeno} & \textbf{Treino} & \textbf{Validação} & \textbf{Teste congelado} \\
+\hline
+A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Auditoria dos dados históricos}
+
+Os arquivos históricos de dupla anotação do Reddit serão tratados como evidência a auditar, não como gold standard automático. A auditoria produzirá uma tabela de proveniência por registro e executará, nesta ordem: identificação inequívoca; vinculação entre planilhas; comparação do texto armazenado; inspeção de truncamento e transformações; detecção de duplicatas e quase duplicatas; reconciliação de schemas; inventário de valores ausentes e inválidos; reconstrução de cada anotador; identificação de adjudicações; verificação de deslocamentos de linha, chaves repetidas e outros erros de alinhamento entre texto e rótulo; e registro de todas as transformações.
+
+As taxonomias históricas serão mapeadas separadamente para intensidade e ambivalência. Um rótulo somente será convertido quando sua definição, instrução de anotação e exemplos forem semanticamente compatíveis com a taxonomia atual. Rótulos de dimensões discursivas antigas não serão convertidos em ambivalência apenas por terem sido chamados de Camada 4. Casos sem correspondência segura receberão o estado ``não mapeável'' e ficarão fora da tarefa pertinente.
+
+Nos dados com dois anotadores, casos consensuais poderão compor o gold depois das demais verificações. Casos adjudicados serão aceitos somente se houver decisão, responsável, regra e versão rastreáveis. Divergências sem adjudicação ficarão fora do benchmark principal e formarão um conjunto de casos difíceis. Não será criada maioria artificial com dois avaliadores, e nenhum rótulo previsto pelo modelo avaliado poderá tornar-se gold.
+
+\subsection{Protocolo de nova anotação}
+
+A equipe elaborará um manual com definições, condições suficientes e insuficientes, fronteiras entre níveis, decisão sobre contexto e exemplos positivos e negativos. O manual passará por rodada piloto independente. Dúvidas recorrentes gerarão revisão versionada antes da anotação principal, sem alterar retroativamente o teste após seu congelamento.
+
+Como a dupla anotação integral é inviável, será usada dupla anotação em uma subamostra planejada. Essa subamostra será estratificada para incluir classes raras, plataformas, períodos, faixas de score preliminar e fenômenos de ambivalência. O restante poderá receber anotação simples após a demonstração de confiabilidade suficiente para o uso pretendido, com auditorias periódicas cegas. A seleção da subamostra não dependerá de acertos conhecidos do modelo final.
+
+Para cada item, o anotador registrará: rótulo de intensidade; confiança do anotador; presença de cada fenômeno de ambivalência; decisão binária de ambivalência; suficiência do contexto; trecho de evidência; e justificativa breve nos casos limítrofes. A interface não exibirá previsão do modelo na criação do gold. O guia proibirá inferir intensidade a partir da identidade do grupo mencionado.
+
+\section{Confiabilidade das anotações}
+\label{sec:confiabilidade}
+
+A concordância será calculada separadamente por camada, versão do manual, plataforma e classe quando houver suporte amostral. A concordância bruta será
+
+\[
+A_o=\frac{N_{\mathrm{acordos}}}{N_{\mathrm{casos\ comparaveis}}}.
+\]
+
+Para dois avaliadores e rótulos nominais, será reportado o coeficiente de Cohen,
+
+\[
+\kappa=\frac{A_o-A_e}{1-A_e},
+\]
+
+em que \(A_e\) é a concordância esperada pelas distribuições marginais \cite{cohen1960}. Uma concordância percentual elevada pode coexistir com baixo ganho sobre o acaso quando uma classe domina as marginais. Por isso, percentual bruto e \(\kappa\) serão apresentados juntos, com matriz entre avaliadores e prevalências.
+
+Na intensidade ordinal, serão reportados \(\kappa\) ponderado linear e quadrático, deixando explícita a matriz de pesos; a formulação ponderada permite penalizar desacordos conforme sua distância \cite{cohen1968}. Quando houver mais de dois avaliadores ou dados incompletos, será considerado o \(\alpha\) de Krippendorff com distância nominal ou ordinal apropriada \cite{hayeskrippendorff2007,artsteinpoesio2008}. Os coeficientes não serão interpretados por faixas universais; intervalos de confiança e padrão de divergências orientarão a decisão.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: concordância entre anotadores}
+\label{tab:modelo-concordancia}
+\scriptsize
+\begin{tabular}{|p{0.08\textwidth}|p{0.11\textwidth}|p{0.08\textwidth}|p{0.10\textwidth}|p{0.09\textwidth}|p{0.12\textwidth}|p{0.11\textwidth}|p{0.11\textwidth}|}
+\hline
+\textbf{Camada} & \textbf{Recorte} & \textbf{Casos} & \textbf{Acordo bruto} & \textbf{\(\kappa\)} & \textbf{\(\kappa_w\) ou \(\alpha\)} & \textbf{Divergências} & \textbf{Exclusões} \\
+\hline
+3 & Global & A preencher & A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+3 & Por classe & A preencher & A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+4 & Global & A preencher & A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+4 & Por fenômeno & A preencher & A preencher & A preencher & A preencher & A preencher & A preencher \\
+\hline
+\end{tabular}
+
+\medskip
+\textit{Matriz entre anotadores, a preencher:}
+
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Anotador A \textbackslash{} Anotador B} & \textbf{Rótulo 1} & \textbf{Rótulo 2} & \textbf{Rótulo 3} & \textbf{Rótulo 4} & \textbf{Rótulo 5} \\
+\hline
+Rótulo 1 & --- & --- & --- & --- & --- \\
+\hline
+Rótulo 2 & --- & --- & --- & --- & --- \\
+\hline
+Rótulo 3 & --- & --- & --- & --- & --- \\
+\hline
+Rótulo 4 & --- & --- & --- & --- & --- \\
+\hline
+Rótulo 5 & --- & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+Além da tabela global, serão produzidas matrizes completas entre avaliadores e concordância por classe. O denominador, os casos ausentes, as exclusões e a existência de adjudicação acompanharão cada valor. Qualquer percentual histórico só poderá ser citado como resultado depois dessa reconstrução.
+
+\section{Particionamento e prevenção de vazamento}
+\label{sec:particionamento}
+
+\subsection{Duplicatas e grupos}
+
+Antes da divisão, uma cópia normalizada será usada exclusivamente para detecção de duplicatas. A normalização preservará o texto original e terá versão própria. Duplicatas exatas serão encontradas por hashing; quase duplicatas serão candidatas por n-gramas, Jaccard ou MinHash e confirmadas por regra ou revisão. Similaridade de embeddings poderá auxiliar na recuperação, mas não determinará sozinha que dois textos pertencem ao mesmo grupo. Reposts, citações extensas, variantes de pontuação, cópias entre plataformas e mensagens pertencentes ao mesmo encadeamento ou evento serão agrupados quando puderem causar dependência.
+
+Para cada grupo \(G_i\), valerá a restrição
+
+\[
+G_i\subseteq D_{\mathrm{development}}
+\quad\text{ou}\quad
+G_i\subseteq D_{\mathrm{validation}}
+\quad\text{ou}\quad
+G_i\subseteq D_{\mathrm{test}},
+\]
+
+nunca em mais de uma partição.
+
+\subsection{Divisão e teste congelado}
+
+Após o agrupamento,
+
+\[
+D=D_{\mathrm{development}}\cup D_{\mathrm{validation}}\cup D_{\mathrm{test}},
+\qquad
+D_a\cap D_b=\varnothing\quad(a\neq b).
+\]
+
+A alocação será feita por grupo e estratificada, quando estatisticamente possível, por rótulo, nível de intensidade, fenômeno de ambivalência, plataforma, período e tipo de conteúdo. Como a combinação desses fatores pode produzir células raras ou vazias, a prioridade será preservar grupos, teste temporal e representação mínima das classes críticas; desvios de estratificação serão registrados, não ocultados por reamostragem.
+
+O teste será congelado com lista de identificadores, hash, versão do schema e controle de acesso. Ele não participará da escolha de modelo, checkpoint, template, paráfrase, regra de agregação, threshold, calibração ou feature. A aplicação final ocorrerá uma única vez ou por um procedimento previamente controlado, e qualquer análise posterior ao teste será registrada como pós-avaliação, sem reclassificar o mesmo resultado como confirmação independente.
+
+Se os dados forem insuficientes para uma única divisão estável, o desenvolvimento considerará \emph{Stratified \(k\)-fold} quando os exemplos forem independentes, \emph{Stratified Group \(k\)-fold} quando houver grupos e estratificação viável ou, quando esta for inviável, \emph{Group \(k\)-fold}. A preservação de grupos prevalecerá sobre a estratificação. O teste congelado permanecerá fora das dobras sempre que houver volume para preservá-lo. Caso isso não seja possível, o estudo será explicitamente classificado como desenvolvimento por validação cruzada, sem alegar avaliação final independente.
+
+\subsection{Validação externa e temporal}
+
+O primeiro benchmark poderá ter predominância de Reddit, mas o protocolo reservará conjuntos externos por plataforma, por tempo e, quando disponível, por evento eleitoral posterior. Evidência no Reddit não demonstra desempenho em X/Twitter, YouTube, Instagram, Facebook ou outras plataformas. Diferenças de tamanho, encadeamento, convenções de citação, moderação, gírias, formatos e disponibilidade de contexto justificam avaliação separada. Estudos de toxicidade mostram que contexto pode alterar julgamentos humanos, embora sua inclusão não garanta melhoria automática do classificador \cite{pavlopoulos2020}; esse efeito será medido, não presumido.
+
+\section{Protocolo experimental}
+\label{sec:protocolo-experimental}
+
+\subsection{Fases do estudo}
+
+O protocolo terá quatro fases sem compartilhamento indevido de decisões.
+
+\begin{description}
+\item[\textbf{Fase A Exploração}] Auditoria, distribuição dos rótulos, diagnóstico zero-shot e redação das famílias de hipóteses. Resultados desta fase não serão finais.
+\item[\textbf{Fase B Seleção}] Comparação de checkpoints NLI, templates, formulações, baselines e configurações exclusivamente em desenvolvimento e validação.
+\item[\textbf{Fase C Calibração}] Ajuste de temperatura, regressão isotônica ou Platt scaling; escolha de thresholds, margens e zona de abstenção usando apenas validação.
+\item[\textbf{Fase D Avaliação final}] Execução da configuração congelada no teste, cálculo de métricas e intervalos de confiança, análise de erros previamente definida e versionamento do resultado.
+\end{description}
+
+\subsection{Inferência direta com checkpoints NLI}
+
+O regime principal será zero-shot baseado em NLI. Para cada registro, o checkpoint receberá somente o par \(x_i=(p_i,h_i)\), formado pelo texto analisado e por uma hipótese em linguagem natural. Não serão incluídos exemplos demonstrativos no input e nenhum parâmetro do checkpoint, cabeça ou representação será atualizado com dados do Radar. Cada hipótese será processada em uma passagem de inferência que produzirá os logits ou probabilidades de entailment, neutral e contradiction.
+
+O termo one-shot não será empregado, pois em aprendizagem em contexto ele indica a presença de uma demonstração rotulada, enquanto os encoders NLI adotados aceitam diretamente o par premissa--hipótese. O procedimento será descrito como classificação zero-shot via NLI ou inferência direta NLI. Calibradores pós-hoc poderão ser ajustados em validação, pois não alteram os pesos do checkpoint; seus parâmetros serão versionados separadamente.
+
+\subsection{Desbalanceamento}
+
+O desbalanceamento afeta a seleção de checkpoint e thresholds, a calibração e a incerteza das métricas. Cenários desbalanceados exigem avaliação sensível à classe minoritária \cite{hegarcia2009}; por isso, accuracy não será usada isoladamente. Não haverá ponderação de loss, oversampling, undersampling ou balanced batch sampling, pois não haverá treinamento do modelo.
+
+Desenvolvimento, validação e teste manterão a distribuição natural do recorte avaliado. Conjuntos balanceados poderão existir apenas como diagnóstico funcional separado e serão identificados como tal. A seleção do checkpoint, das hipóteses e dos thresholds considerará Macro-F1, métricas por classe, calibração e variância em classes raras, sem alterar artificialmente a prevalência da validação ou do teste.
+
+\subsection{Grade de configurações de inferência NLI}
+
+As escolhas seguintes delimitam a configuração de inferência e serão selecionadas somente em desenvolvimento e validação. Nenhuma delas é declarada ótima.
+
+\begin{table}[htbp]
+\centering
+\caption{Grade candidata de configurações de inferência NLI}
+\label{tab:configuracao-inferencia-nli}
+\begin{tabular}{|p{0.26\textwidth}|p{0.55\textwidth}|}
+\hline
+\textbf{Componente} & \textbf{Valores candidatos ou regra de seleção} \\
+\hline
+Checkpoint e revisão & Identificador imutável, hash ou revisão, tokenizer e mapeamento documentado das saídas NLI. \\
+\hline
+Mapeamento dos rótulos & Ordem documentada de entailment, neutral e contradiction, verificada por testes unitários. \\
+\hline
+Precisão numérica & FP32, FP16, BF16 ou quantização documentada; divergências relevantes serão medidas antes do congelamento. \\
+\hline
+Lote de inferência & Tamanho definido por memória e latência, sem alterar a ordem ou os resultados esperados. \\
+\hline
+Comprimento máximo & \(\{128,256,512\}\) tokens, após auditoria de truncamento. \\
+\hline
+Templates e paráfrases & Famílias versionadas; seleção por validação e análise de sensibilidade sem consulta ao teste. \\
+\hline
+Agregação & Máximo, média, mediana, mínimo ou regra hierárquica entre hipóteses e paráfrases. \\
+\hline
+Thresholds e abstenção & Grade definida a partir das curvas de validação; seleção conjunta de \(\tau\), \(\delta\) e cobertura. \\
+\hline
+Calibração & Temperatura \(T>0\), Platt scaling ou regressão isotônica, ajustados em validação separada. \\
+\hline
+Reexecução & Inferência em modo de avaliação, sem dropout; uma repetição de auditoria verificará igualdade dos logits ou tolerância numérica pré-registrada. \\
+\hline
+\end{tabular}
+\end{table}
+
+Não haverá épocas, backpropagation, função de perda, warmup, weight decay, dropout ajustável ou early stopping. A seleção será feita sobre saídas de inferência congeladas. A estabilidade será examinada entre checkpoints, templates e condições numéricas de inferência; reexecuções da mesma configuração deverão produzir resultados idênticos ou diferenças inferiores à tolerância pré-registrada.
+
+\section{Avaliação da Camada 3}
+\label{sec:avaliacao-c3}
+
+\subsection{Métricas globais e por classe}
+
+A Camada 3 será avaliada como problema de cinco classes e, em análise complementar, como problema ordinal. Para uma classe \(c\), sejam \(TP_c\), \(FP_c\) e \(FN_c\) os verdadeiros positivos, falsos positivos e falsos negativos. Então,
+
+\[
+P_c=\frac{TP_c}{TP_c+FP_c},\qquad
+R_c=\frac{TP_c}{TP_c+FN_c},\qquad
+F1_c=\frac{2P_cR_c}{P_c+R_c},
+\]
+
+com denominadores nulos tratados por regra declarada no script de avaliação. A métrica principal será
+
+\[
+\operatorname{MacroF1}=\frac{1}{5}\sum_{c=1}^{5}F1_c,
+\]
+
+pois atribui o mesmo peso às classes, independentemente da prevalência. Serão relatadas também precisão, recall e F1 por classe, acurácia balanceada, suporte e matriz de confusão. Accuracy isolada é inadequada no cenário desbalanceado porque pode permanecer elevada com predições sistemáticas da classe majoritária e ocultar falhas nas classes raras. A escolha evita que uma classe majoritária domine a síntese \cite{sokolovalapalme2009}.
+
+\subsection{Métricas ordinais}
+
+A avaliação ordinal usará o erro absoluto médio,
+
+\[
+\operatorname{MAE}_{\mathrm{ord}}
+=\frac{1}{n}\sum_{i=1}^{n}|y_i-\widehat{y}_i|,
+\]
+
+e kappa ponderado de Cohen com pesos quadráticos,
+
+\[
+\kappa_w=1-\frac{\sum_{a=1}^{5}\sum_{b=1}^{5}w_{ab}O_{ab}}
+{\sum_{a=1}^{5}\sum_{b=1}^{5}w_{ab}E_{ab}},
+\qquad
+w_{ab}=\frac{(a-b)^2}{(5-1)^2},
+\]
+
+em que \(O\) é a matriz observada e \(E\), a matriz esperada sob independência \cite{cohen1968}. Também serão informadas as taxas de erro adjacente, \(|y-\widehat y|=1\), e erro extremo, \(|y-\widehat y|\geq 3\). Isso impede que confundir N1 com N2 seja equiparado a confundir N1 com N5.
+
+\subsection{Relato mínimo da Camada 3}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: resultados gerais da Camada 3}
+\label{tab:resultados-gerais-c3}
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Sistema} & \textbf{Macro-F1} & \textbf{Bal. Acc.} & \textbf{\(\kappa_w\)} & \textbf{MAE ord.} & \textbf{IC 95\%} \\
+\hline
+A preencher & --- & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: desempenho por nível da Camada 3}
+\label{tab:resultados-classe-c3}
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+\textbf{Nível} & \textbf{Precisão} & \textbf{Recall} & \textbf{F1} & \textbf{Suporte} \\
+\hline
+N1 & --- & --- & --- & --- \\
+\hline
+N2 & --- & --- & --- & --- \\
+\hline
+N3 & --- & --- & --- & --- \\
+\hline
+N4 & --- & --- & --- & --- \\
+\hline
+N5 & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Avaliação da Camada 4}
+\label{sec:avaliacao-c4}
+
+\subsection{Decisão binária, fenômenos e decomposição}
+
+Na tarefa binária, a métrica principal será Macro-F1. Serão relatados ainda precisão, recall e F1 da classe positiva, acurácia balanceada, área sob a curva precisão--recall (AUPRC) e coeficiente de correlação de Matthews (MCC). AUPRC é especialmente informativa quando a classe positiva é rara \cite{davisgoadrich2006}, e o MCC sintetiza as quatro células da matriz de confusão \cite{matthews1975}:
+
+\[
+\operatorname{MCC}=
+\frac{TP\,TN-FP\,FN}
+{\sqrt{(TP+FP)(TP+FN)(TN+FP)(TN+FN)}}.
+\]
+
+Um denominador nulo será tratado conforme regra declarada, sem substituir silenciosamente o valor por uma estimativa favorável. Como não haverá treinamento, as formulações binária, multiclasse e multirrótulo serão comparadas por suas regras de decisão aplicadas aos escores NLI, sem otimização de função de perda nos dados do Radar. Para a saída multirrótulo por fenômeno, serão calculados Macro-F1 e Micro-F1 sobre os fenômenos, além de precisão, recall, F1, Average Precision e suporte por fenômeno. Também serão relatadas
+
+\[
+\operatorname{HammingLoss}=\frac{1}{nL}\sum_{i=1}^{n}\sum_{\ell=1}^{L}
+\mathbf{1}[y_{i\ell}\neq\widehat y_{i\ell}]
+\]
+
+e a média macro da Average Precision sobre os \(L\) fenômenos. Para a formulação multiclasse exclusiva, serão apresentados Macro-F1, precisão, recall, F1 por classe e matriz de confusão; sua adequação empírica dependerá de a auditoria confirmar exclusividade suficiente. A perda exata de subconjunto será relatada somente na formulação multirrótulo e sempre acompanhada de métricas por rótulo.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: resultados gerais da Camada 4}
+\label{tab:resultados-gerais-c4}
+\scriptsize
+\begin{tabular}{|l|c|c|c|c|c|c|c|}
+\hline
+\textbf{Sistema} & \textbf{Macro-F1} & \textbf{Prec. positiva} & \textbf{Recall positivo} & \textbf{F1 positiva} & \textbf{AUPRC} & \textbf{Bal. Acc.} & \textbf{MCC} \\
+\hline
+A preencher & --- & --- & --- & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: desempenho por fenômeno de ambivalência}
+\label{tab:resultados-fenomeno-c4}
+\begin{tabular}{|p{0.31\textwidth}|c|c|c|c|}
+\hline
+\textbf{Fenômeno} & \textbf{Precisão} & \textbf{Recall} & \textbf{F1} & \textbf{Suporte} \\
+\hline
+Ironia & --- & --- & --- & --- \\
+\hline
+Sarcasmo & --- & --- & --- & --- \\
+\hline
+Citação & --- & --- & --- & --- \\
+\hline
+Negação & --- & --- & --- & --- \\
+\hline
+Contra-discurso & --- & --- & --- & --- \\
+\hline
+Denúncia & --- & --- & --- & --- \\
+\hline
+Atribuição a terceiros & --- & --- & --- & --- \\
+\hline
+Linguagem implícita & --- & --- & --- & --- \\
+\hline
+Conflito interpretativo & --- & --- & --- & --- \\
+\hline
+Outro fenômeno validado & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Comparações estratificadas e análise de sensibilidade}
+
+Todas as métricas principais serão desagregadas por plataforma, período, fenômeno e, quando houver autorização ética e suporte amostral, subgrupos relevantes. Uma lacuna de desempenho entre grupos será apresentada com tamanho das células e intervalo de confiança; não será convertida automaticamente em explicação causal. Células abaixo do limiar mínimo pré-registrado serão suprimidas ou agregadas para evitar inferências instáveis e riscos de reidentificação.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: desempenho por plataforma}
+\label{tab:resultados-plataforma}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Plataforma} & \textbf{Camada} & \textbf{Métrica principal} & \textbf{Suporte} & \textbf{IC 95\%} \\
+\hline
+Reddit & C3/C4 & --- & --- & --- \\
+\hline
+X/Twitter & C3/C4 & --- & --- & --- \\
+\hline
+YouTube & C3/C4 & --- & --- & --- \\
+\hline
+Instagram/Facebook/outra & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: desempenho por período}
+\label{tab:resultados-periodo}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Período} & \textbf{Camada} & \textbf{Métrica principal} & \textbf{Suporte} & \textbf{IC 95\%} \\
+\hline
+Janela de desenvolvimento & C3/C4 & --- & --- & --- \\
+\hline
+Janela temporal futura & C3/C4 & --- & --- & --- \\
+\hline
+Outra janela pré-registrada & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: sensibilidade a templates}
+\label{tab:resultados-template}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Família/template} & \textbf{Camada} & \textbf{Macro-F1} & \textbf{Variação} & \textbf{Cobertura} \\
+\hline
+Principal & C3/C4 & --- & --- & --- \\
+\hline
+Paráfrase 1 & C3/C4 & --- & --- & --- \\
+\hline
+Paráfrase 2 & C3/C4 & --- & --- & --- \\
+\hline
+Ensemble pré-definido & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: comparação entre modelos e baselines}
+\label{tab:resultados-modelo}
+\begin{tabular}{|p{0.34\textwidth}|c|c|c|c|}
+\hline
+\textbf{Modelo/baseline} & \textbf{Camada} & \textbf{Métrica principal} & \textbf{Parâmetros} & \textbf{Custo} \\
+\hline
+Majoritário/heurístico & C3/C4 & --- & --- & --- \\
+\hline
+Regras lexicais/ordinais & C3/C4 & --- & --- & --- \\
+\hline
+Checkpoint NLI 1 & C3/C4 & --- & --- & --- \\
+\hline
+Checkpoint NLI 2 & C3/C4 & --- & --- & --- \\
+\hline
+Checkpoint NLI 3 & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: reprodutibilidade da inferência NLI}
+\label{tab:resultados-reexecucao}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Configuração} & \textbf{Camada} & \textbf{Reexecuções} & \textbf{Divergências} & \textbf{Máx. diferença numérica} \\
+\hline
+A preencher & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Calibração, incerteza e intervalos de confiança}
+
+\subsection{Confiança e calibração}
+
+A confiança não será definida como ``o maior softmax'' sem validação. Para uma predição \(\widehat y_i\), a confiança operacional poderá ser \(\widehat c_i=\max_c p(c\mid x_i)\) após calibração, enquanto a correção observada será \(a_i=\mathbf{1}[\widehat y_i=y_i]\). Um sistema é calibrado quando, aproximadamente,
+
+\[
+\Pr(a_i=1\mid \widehat c_i=q)=q.
+\]
+
+Serão construídos diagramas de confiabilidade e calculados ECE e Brier score \cite{brier1950,guo2017calibration}. Para bins \(B_m\),
+
+\[
+\operatorname{ECE}=\sum_{m=1}^{M}\frac{|B_m|}{n}
+\left|\operatorname{acc}(B_m)-\operatorname{conf}(B_m)\right|.
+\]
+
+Na Camada 3, o Brier multiclasse será \(n^{-1}\sum_i\sum_c(p_{ic}-\mathbf{1}[y_i=c])^2\). Na Camada 4, serão relatados Brier binário e, se multirrótulo, Brier por fenômeno. ECE dependerá da binagem; por isso, o número de bins, a regra de fronteiras e uma análise de sensibilidade serão registrados.
+
+Temperatura, Platt scaling ou regressão isotônica poderão ser ajustados apenas em um subconjunto de validação \cite{zadroznyelkan2002}. O método será escolhido segundo erro de calibração e desempenho discriminativo em validação. Recalibração não poderá usar o teste nem mascarar piora de classificação.
+
+\subsection{Abstenção e risco seletivo}
+
+Em uso assistivo, o sistema poderá abster-se quando a confiança calibrada for inferior a \(\tau\), quando a margem entre as duas melhores classes for inferior a \(\delta\), quando hipóteses incompatíveis receberem suporte simultâneo ou quando sinais de contexto ausente forem detectados. Para o subconjunto aceito \(A_\tau=\{i:\widehat c_i\geq\tau\}\), definem-se
+
+\[
+\operatorname{cobertura}(\tau)=\frac{|A_\tau|}{n},\qquad
+\operatorname{risco}(\tau)=\frac{1}{|A_\tau|}\sum_{i\in A_\tau}\mathbf{1}[\widehat y_i\neq y_i].
+\]
+
+A curva risco--cobertura mostrará o custo de automatizar mais casos. A literatura de classificação seletiva fundamenta essa análise \cite{geifmangulyaniv2017}. O threshold não será escolhido para maximizar o teste: será congelado após validação, de acordo com a tolerância a falso negativo, falso positivo e volume de revisão humana estabelecida pela governança.
+
+\subsection{Intervalos de confiança}
+
+Serão calculados intervalos de 95\% por bootstrap estratificado por grupo, reamostrando a unidade de independência (por exemplo, thread, autor anonimizado ou cluster de duplicatas), e não mensagens isoladas dependentes. A quantidade de réplicas, semente e método do intervalo serão pré-registrados. Para comparações pareadas, a mesma amostra bootstrap será aplicada aos dois sistemas, e será reportado o intervalo da diferença \cite{efrontibshirani1993}. Em células pequenas ou métricas degeneradas, o intervalo será marcado como não estimável.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: calibração e abstenção}
+\label{tab:resultados-calibracao}
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Camada/método} & \textbf{ECE} & \textbf{Brier} & \textbf{Cobertura} & \textbf{Risco} & \textbf{Threshold} \\
+\hline
+C3 a preencher & --- & --- & --- & --- & --- \\
+\hline
+C4 a preencher & --- & --- & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Testes de robustez e análise de erros}
+
+\subsection{Testes funcionais controlados}
+
+O conjunto funcional será construído independentemente do teste natural, com pares ou famílias minimamente contrastivas. Cada caso terá fenômeno-alvo, expectativa, transformações permitidas e justificativa linguística. A inspiração será o teste por capacidades de CheckList e o desenho funcional de HateCheck, adaptados às tarefas de hostilidade ordinal e ambivalência, sem copiar sua ontologia como se fosse rótulo do Radar \cite{ribeiro2020,rottger2021}. Testes de estresse de NLI alertam para fragilidade a negação, sobreposição lexical e comprimento \cite{naik2018}.
+
+As variações controladas incluirão: inclusão e remoção de negação; mudança do grupo-alvo e substituição de nomes; troca entre singular e generalização coletiva; citação explícita versus endosso; marcadores de ironia; grafias ofuscadas; abreviações; emojis; hashtags; erros ortográficos; presença ou ausência de pontuação; caixa alta; alongamento de caracteres; gíria regional; paráfrases e pequenas alterações lexicais semanticamente equivalentes; inserção de contexto anterior; remoção do contexto; ameaça abstrata versus agente e alvo identificados; e substituição de palavra ofensiva por descrição neutra. Será medida a taxa de mudança indevida da predição em transformações que preservem o significado. A expectativa não será inferida mecanicamente: cada transformação será validada por anotadores para confirmar que preserva ou altera o rótulo pretendido.
+
+Para intensidade, as famílias funcionais formarão progressões controladas entre estereótipo, inferiorização, exclusão, discriminação, ameaça, violência e eliminação, além de controles negativos sem hostilidade endossada. Para ambivalência, os pares contrastarão afirmação com citação, endosso com denúncia, afirmação com negação, literalidade com ironia, discurso próprio com fala atribuída e conteúdo explícito com conteúdo pragmaticamente ambíguo. Esses casos testarão capacidades específicas independentemente da distribuição natural do corpus e permanecerão separados do benchmark natural.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: testes funcionais e de robustez}
+\label{tab:resultados-testes-funcionais}
+\begin{tabular}{|p{0.30\textwidth}|c|c|c|c|}
+\hline
+\textbf{Capacidade/fenômeno} & \textbf{Camada} & \textbf{Casos} & \textbf{Taxa de acerto} & \textbf{Falha crítica} \\
+\hline
+Negação & C3/C4 & --- & --- & --- \\
+\hline
+Citação versus endosso & C3/C4 & --- & --- & --- \\
+\hline
+Ironia e código & C4 & --- & --- & --- \\
+\hline
+Escalonamento de hostilidade & C3 & --- & --- & --- \\
+\hline
+Contexto e plataforma & C3/C4 & --- & --- & --- \\
+\hline
+Ruído textual & C3/C4 & --- & --- & --- \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Taxonomia de erros}
+
+A análise separará falsos positivos e falsos negativos, ambivalências não detectadas e falsamente atribuídas e, na intensidade, erros adjacentes e extremos. Todo erro amostrado receberá, quando aplicável, mais de uma categoria:
+
+\begin{enumerate}
+\item confusão ordinal adjacente ou extrema na Camada 3;
+\item negação ignorada ou escopo de negação mal resolvido;
+\item citação, relato ou reapropriação confundidos com endosso;
+\item ironia, sarcasmo, humor ou dog whistle não reconhecidos;
+\item dependência de contexto conversacional, multimodal, histórico ou sociopolítico ausente;
+\item alvo protegido, coletivo ou referente pronominal mal identificado;
+\item ameaça hipotética, condicional, desejada ou direta confundida;
+\item desumanização, exclusão de direitos e extermínio confundidos;
+\item ruído, truncamento, idioma misto, OCR, URL, emoji ou grafia ofuscada;
+\item hipótese inadequada, artefato lexical ou sensibilidade à paráfrase;
+\item erro do rótulo de referência, desacordo legítimo ou caso fora da taxonomia;
+\item erro de calibração: decisão correta com confiança baixa ou incorreta com confiança alta.
+\end{enumerate}
+
+A amostra de análise incluirá todos os erros críticos e uma amostra estratificada dos demais, além de acertos de alta confiança para detectar atalhos espúrios. Dois pesquisadores revisarão a tipologia; divergências serão reconciliadas e a frequência será reportada com denominador. A análise não transformará anedotas em prevalências.
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: análise sistemática de erros}
+\label{tab:resultados-erros}
+\begin{tabular}{|p{0.32\textwidth}|c|c|c|p{0.25\textwidth}|}
+\hline
+\textbf{Categoria} & \textbf{Camada} & \textbf{Contagem} & \textbf{Percentual} & \textbf{Ação candidata} \\
+\hline
+A preencher & C3/C4 & --- & --- & A preencher após análise \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Critérios de viabilidade e decisão}
+\label{sec:viabilidade}
+
+Não se fixa neste documento um número universal de Macro-F1, kappa, AUPRC ou ECE que, por si só, torne uma camada válida. Os critérios quantitativos e operacionais serão pré-registrados antes de abrir o teste e deverão refletir prevalência, custo de erros, capacidade de revisão e finalidade estritamente assistiva. Caso sejam propostos valores mínimos, eles serão identificados como \textbf{critérios operacionais internos do Radar do Ódio}, não como padrões universais da área. A decisão será tomada separadamente por camada e, quando necessário, por plataforma ou fenômeno, considerando conjuntamente Macro-F1, desempenho da classe minoritária, recall crítico, calibração, intervalos de confiança, sensibilidade ao template e ao checkpoint, desempenho por plataforma e período, taxa de abstenção e carga resultante de revisão humana.
+
+\begin{description}
+\item[Estado 0 --- Não apta.] A camada não apresenta evidência suficiente para uso experimental confiável: não supera baselines relevantes, é instável, não generaliza, falha em capacidades críticas, não permite calibração operacional ou carece de dados confiáveis. Nesse estado, não será implantada.
+\item[Estado 1 --- Experimental com revisão humana.] O sistema tem utilidade potencial para pesquisa, triagem, priorização ou análise exploratória, mas toda decisão substantiva exige revisão humana. Abstenções e casos críticos entram obrigatoriamente na fila de revisão.
+\item[Estado 2 --- Apta para uso operacional monitorado.] Todos os critérios pré-registrados são satisfeitos no teste e nos recortes críticos; a calibração é adequada; a cobertura útil sob abstenção é compatível com a operação; erros críticos permanecem abaixo do limite interno aprovado; e continuam ativos auditoria, revisão humana e monitoramento.
+\end{description}
+
+\textbf{No estado atual, antes da execução do protocolo descrito, nenhuma das duas camadas pode ser considerada empiricamente validada.}
+
+\begin{table}[htbp]
+\centering
+\caption{Modelo para preenchimento após os experimentos: decisão de viabilidade}
+\label{tab:resultados-viabilidade}
+\begin{tabular}{|p{0.22\textwidth}|p{0.26\textwidth}|p{0.28\textwidth}|p{0.14\textwidth}|}
+\hline
+\textbf{Estado} & \textbf{Condição de enquadramento} & \textbf{Uso permitido} & \textbf{C3/C4} \\
+\hline
+Estado 0 --- Não apta & Evidência insuficiente nos critérios pré-registrados. & Sem uso experimental ou operacional. & A preencher \\
+\hline
+Estado 1 --- Experimental com revisão humana & Utilidade de triagem com limitações documentadas. & Pesquisa, triagem, priorização e análise exploratória; revisão humana obrigatória. & A preencher \\
+\hline
+Estado 2 --- Apta para uso operacional monitorado & Desempenho, estabilidade, calibração e generalização satisfazem os critérios internos. & Uso monitorado, auditável e sujeito a abstenção, contestação e retirada. & A preencher \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Fluxo de revisão humana e governança operacional}
+
+O sistema será tratado como apoio à pesquisa e à priorização, não como autoridade autônoma. O fluxo mínimo será:
+
+\begin{enumerate}
+\item registrar texto, contexto disponível, plataforma, tempo, versão do dado e restrições de acesso;
+\item executar o pipeline versionado e conservar logits, probabilidades calibradas, hipóteses, predição, margem e motivo de abstenção;
+\item encaminhar automaticamente à revisão os casos abstidos, de alta gravidade potencial, de fenômenos ambivalentes ou de conflito entre regras;
+\item apresentar ao revisor o conteúdo e o contexto autorizado, sem ocultar incerteza nem usar explicações geradas como prova;
+\item coletar decisão humana independente, justificativa estruturada e sinalização de erro taxonômico ou dado insuficiente;
+\item submeter divergências críticas a segundo revisor e adjudicação; e
+\item registrar a decisão final, sem sobrescrever a saída original, e incorporar futuramente casos revisados ao corpus de desenvolvimento somente em nova versão e sem contaminar testes congelados.
+\end{enumerate}
+
+Papéis e permissões serão separados: pesquisadores podem analisar; anotadores acessam apenas o necessário; adjudicadores resolvem divergências; responsáveis de governança aprovam critérios, implantação e retirada. Mudanças de rótulo no conjunto ouro exigirão justificativa, autor, data e nova versão. Saídas não serão usadas isoladamente para punição, denúncia automatizada, moderação irreversível ou inferência de identidade e intenção individual.
+
+\section{Ciclos de melhoria contínua}
+
+Até o final do ano, ciclos periódicos trimestrais ou acionados por volume de novos dados seguirão o fluxo
+
+\[
+\text{coleta}\rightarrow\text{amostragem}\rightarrow\text{anotação}
+\rightarrow\text{auditoria}\rightarrow\text{avaliação}
+\rightarrow\text{revisão das hipóteses ou recalibração}\rightarrow\text{monitoramento}.
+\]
+
+Cada ciclo terá quatro portas de controle: diagnóstico, proposta, validação e liberação. O diagnóstico agregará erros, abstenções, desacordos humanos, mudanças de prevalência e alertas de drift. A proposta distinguirá ações que frequentemente são confundidas:
+
+\begin{itemize}
+\item \textbf{atualização de dados}: inclusão de novos períodos, plataformas, fenômenos ou exemplos difíceis, com nova auditoria e anotação;
+\item \textbf{recalibração}: ajuste apenas do mapeamento de escores para probabilidades ou thresholds, sem alterar representações do modelo;
+\item \textbf{alteração de template}: mudança nas hipóteses ou na agregação, tratada como mudança de modelo decisório;
+\item \textbf{troca de checkpoint ou arquitetura}: nova configuração que requer comparação completa e não herda automaticamente a validação anterior.
+\end{itemize}
+
+Nenhuma dessas ações será avaliada no teste histórico repetidamente para orientar desenvolvimento. Uma mudança material exigirá novo conjunto temporal ou procedimento de teste formalmente versionado. O modelo anterior permanecerá disponível para comparação e rollback.
+
+\section{Validação temporal e monitoramento de drift}
+
+Sejam \(T_1<T_2<\cdots<T_K\) janelas cronológicas. Modelos e calibradores serão desenvolvidos em janelas anteriores e avaliados em janela posterior sem embaralhamento temporal. Um desenho de janela deslizante poderá selecionar a configuração em \(T_1,\ldots,T_{k-1}\) e testá-la em \(T_k\); outro, de origem fixa, manterá a configuração NLI inicial para medir degradação acumulada. Resultados no mesmo período não substituem generalização temporal. A linguagem de mídias sociais muda, e avaliações temporais específicas são necessárias \cite{ushio2024temporal}.
+
+O monitoramento registrará, por janela, distribuição dos rótulos, distribuição dos scores, confiança média, taxa de abstenção, calibração, mudança lexical, plataforma, tópico e frequência dos erros confirmados pela revisão humana. Uma alteração distributiva não será chamada de concept drift sem evidência adicional de mudança na relação entre entrada e rótulo. A análise separará:
+
+\begin{itemize}
+\item \textbf{drift de dados}: mudança em plataforma, idioma, comprimento, léxico, embedding, taxa de truncamento, contexto, URLs, emojis ou tópicos;
+\item \textbf{drift de rótulo}: mudança de prevalência de níveis ou fenômenos e de padrões de anotação;
+\item \textbf{drift conceitual}: mudança na relação entre texto/contexto e rótulo, inclusive surgimento de códigos e convenções discursivas.
+\end{itemize}
+
+Dataset shift e concept drift serão tratados como problemas distintos \cite{quinonerocandela2009,gama2014}. Alertas serão disparados por regras pré-registradas que combinem deterioração estatisticamente relevante e persistente, degradação em amostras rotuladas recentes, perda de calibração, crescimento de abstenção, aumento de erros críticos, aparecimento de novos fenômenos linguísticos, mudança de domínio, crescimento suficiente do conjunto anotado ou alteração da taxonomia. Um alerta não implica atualização automática: inicia auditoria humana para decidir entre coletar dados, revisar diretrizes, recalibrar, ajustar hipóteses, trocar o checkpoint NLI ou suspender a camada.
+
+\section{Versionamento, rastreabilidade e reprodutibilidade}
+
+Cada execução terá uma identidade imutável
+
+\[
+R=(D_v,G_v,S_v,M_v,H_v,C_v,E_v),
+\]
+
+em que \(D_v\) identifica o snapshot dos dados; \(G_v\), gold standard, diretrizes e ontologia; \(S_v\), partições; \(M_v\), modelo; \(H_v\), hipóteses e regras de agregação; \(C_v\), configuração e calibrador; e \(E_v\), ambiente de execução. Além dessa identidade composta, o registro manterá versões independentes de dataset, gold standard, split, arquitetura, checkpoint, tokenizer, template NLI, código, configuração e resultados. Mudar qualquer componente gera nova identidade e impede atribuir o resultado à configuração anterior.
+
+Para cada execução serão preservados: identificador e data do experimento; versão e hash do dataset; consulta de extração; intervalo temporal; critérios de filtragem; contagens em cada etapa; arquitetura, checkpoint, revisão imutável e tokenizer; bibliotecas e versões das dependências; sistema operacional, GPU, CPU, memória e CUDA; precisão numérica, tamanho do lote e demais parâmetros de inferência; templates; regras de agregação; thresholds; método de calibração; tempo de inferência; pico de memória; commit Git; arquivo de configuração; origem, licença, transformações e comandos. Dados sensíveis não serão incorporados a repositórios públicos; manifests reproduzíveis poderão usar identificadores pseudonimizados e hashes.
+
+\subsection{Pseudocódigo do experimento}
+
+\begin{enumerate}
+\item Carregar os dados e validar schema, hashes, proveniência e permissões.
+\item Auditar textos, rótulos, alinhamentos, ausências e decisões de cada anotador.
+\item Harmonizar a taxonomia sem forçar casos não mapeáveis.
+\item Normalizar para detecção e agrupar duplicatas, near-duplicates, threads e outras dependências.
+\item Criar as partições de desenvolvimento, validação e teste por grupo, estratificadas quando possível.
+\item Congelar o teste e verificar automaticamente que nenhum grupo cruza partições.
+\item Construir e versionar hipóteses, paráfrases, verbalizadores e regras candidatas.
+\item Executar a inferência direta para cada par premissa--hipótese, sem demonstrações e sem atualizar os pesos do checkpoint.
+\item Selecionar checkpoint NLI, template, regra de score e agregação exclusivamente em validação.
+\item Calibrar probabilidades, thresholds, margens e abstenção na validação reservada.
+\item Selecionar e congelar uma configuração completa, incluindo código e ambiente.
+\item Avaliar a configuração congelada no teste final conforme o plano de acesso.
+\item Produzir métricas, intervalos, estratos, testes funcionais e análise de erros, distinguindo análises confirmatórias e pós-avaliação.
+\item Versionar resultados, manifests, limitações, decisão de viabilidade e hashes dos artefatos.
+\end{enumerate}
+
+\subsection{Checklist de liberação}
+
+\providecommand{\checkempty}{\fbox{\rule{0pt}{1.1ex}\rule{1.1ex}{0pt}}}
+
+\begin{itemize}
+\item[\checkempty] Duplicatas, threads e autores agrupados antes da partição.
+\item[\checkempty] Quase duplicatas foram verificadas e incorporadas aos grupos.
+\item[\checkempty] O mesmo comentário não aparece em múltiplas partições.
+\item[\checkempty] O mesmo grupo de duplicatas não aparece em múltiplas partições.
+\item[\checkempty] O teste não foi utilizado para escolher templates ou paráfrases.
+\item[\checkempty] O teste não foi utilizado para selecionar modelo ou checkpoint.
+\item[\checkempty] O teste não foi utilizado para configurações de inferência, features ou regras de agregação.
+\item[\checkempty] O teste não foi utilizado para thresholds, calibração ou abstenção.
+\item[\checkempty] Nenhum rótulo previsto foi reutilizado como gold standard.
+\item[\checkempty] Exemplos de testes funcionais não contaminam o benchmark natural.
+\item[\checkempty] Versões do dataset, do gold e dos splits foram congeladas.
+\item[\checkempty] Checkpoint NLI, tokenizer, commit, dependências, hardware e parâmetros de inferência foram registrados.
+\item[\checkempty] Hipóteses, paráfrases, verbalizadores e regras de agregação foram congelados.
+\item[\checkempty] Diretrizes, adjudicação e confiabilidade interanotador foram versionadas.
+\item[\checkempty] Métricas, calibração, intervalos, robustez e análise de erros foram concluídos.
+\item[\checkempty] Revisão humana, proteção de dados, monitoramento e rollback estão ativos.
+\end{itemize}
+
+\section{Limitações}
+
+NLI oferece uma interface flexível entre texto e rótulos descritos por linguagem natural, mas não converte automaticamente conceitos normativos em fatos objetivos. Probabilidades do modelo não são probabilidades de intenção, dano real ou ilegalidade. A taxonomia de cinco níveis pode comprimir fenômenos diferentes em uma única ordem; a Camada 4 pode conter fenômenos simultâneos que desafiam uma decisão binária ou exclusiva. As classes dependem das diretrizes, do contexto disponível e de julgamentos situados.
+
+Os checkpoints candidatos transferem conhecimento de corpora NLI gerais e podem carregar artefatos de anotação \cite{gururangan2018}. XNLI não contém português entre seus quinze idiomas originais \cite{conneau2018xnli}; modelos que declaram suporte a português podem depender de transferência multilíngue ou dados traduzidos, com ruído e diferenças culturais. Como não há ajuste supervisionado ao domínio, toda adaptação depende das hipóteses, regras e calibração. Templates influenciam escores; tokenização e truncamento podem apagar o trecho decisivo; e linguagem implícita, ironia, referências locais, imagens, áudio e histórico de conversação podem não estar no texto de entrada.
+
+Desempenho em Reddit ou em um período não implica validade em outras plataformas ou épocas. O desbalanceamento e o pequeno número de exemplos em classes raras podem produzir alta variância, enquanto a ausência de dupla anotação generalizada limita a medição da confiabilidade no restante da amostra. Ruído histórico, mudanças de schema e taxonomia e divergências não adjudicadas reduzem o volume utilizável. A subjetividade da intensidade e da ambivalência, a incerteza pragmática e a dependência de contexto persistem mesmo com diretrizes detalhadas. Intervalos bootstrap podem não refletir todas as fontes de incerteza. A avaliação funcional melhora a cobertura de capacidades conhecidas, mas não antecipa todas as formas futuras de expressão nem toda mudança linguística do período eleitoral. Por fim, revisão humana também erra e pode reproduzir vieses; por isso, a governança precisa monitorar tanto o modelo quanto o processo de anotação.
+
+\section{Ética, proteção de dados e contexto sociopolítico}
+
+O estudo seguirá finalidade, minimização e controle de acesso. Identificadores diretos serão removidos ou pseudonimizados; URLs, nomes de usuário, imagens e metadados serão retidos apenas quando necessários e autorizados. Citações em relatórios serão parafraseadas ou redigidas quando houver risco de busca reversa. Prazos de retenção, responsáveis, base ética e procedimento de incidente serão documentados conforme as normas institucionais e jurídicas aplicáveis, sem presumir que conteúdo público seja isento de proteção.
+
+Atributos sensíveis não serão inferidos para preencher lacunas nem usados como atalhos preditivos. Gênero, raça, religião, orientação sexual, posição política, identidade social e outros atributos sensíveis não poderão elevar intensidade ou ambivalência por si mesmos. Quando algum atributo estiver legitimamente disponível para auditoria de equidade, será usado sob acesso restrito, com justificativa, granularidade mínima e relatório que evite reidentificação. Diferenças entre grupos serão investigadas quanto a suporte, qualidade da anotação, prevalência, plataforma e contexto antes de qualquer interpretação. Nenhum grupo será descrito como intrinsecamente mais hostil com base em uma amostra de mensagens.
+
+O contexto sociopolítico integra o fenômeno: termos, códigos, alvos e assimetrias de poder mudam com eventos, comunidades e disputas públicas. A revisão qualitativa deverá incluir competência linguística e contextual pertinente, registrar divergências e evitar apagar usos de autodefesa, contra-discurso, documentação de violência ou reapropriação. As saídas das Camadas 3 e 4 não determinarão intenção individual, diagnóstico, perfil político, sanção ou remoção automática. A governança oferecerá mecanismo de contestação, registrará correções sem apagar o histórico e documentará erros e decisões de retirada. Casos de risco imediato seguirão um protocolo humano separado, legal e institucionalmente aprovado.
+
+\begin{thebibliography}{99}
+
+\bibitem[Allport(1954)]{allport1954}
+ALLPORT, G. W. \emph{The Nature of Prejudice}. Reading, MA: Addison-Wesley, 1954.
+
+\bibitem[Artstein e Poesio(2008)]{artsteinpoesio2008}
+ARTSTEIN, R.; POESIO, M. Inter-coder agreement for computational linguistics. \emph{Computational Linguistics}, v. 34, n. 4, p. 555--596, 2008. DOI: \url{https://doi.org/10.1162/coli.07-034-R2}.
+
+\bibitem[Bowman et al.(2015)]{bowman2015}
+BOWMAN, S. R. et al. A large annotated corpus for learning natural language inference. In: \emph{Proceedings of EMNLP}. Lisbon: ACL, 2015. p. 632--642. DOI: \url{https://doi.org/10.18653/v1/D15-1075}.
+
+\bibitem[Brier(1950)]{brier1950}
+BRIER, G. W. Verification of forecasts expressed in terms of probability. \emph{Monthly Weather Review}, v. 78, n. 1, p. 1--3, 1950. DOI: \url{https://doi.org/10.1175/1520-0493(1950)078\%3C0001:VOFEIT\%3E2.0.CO;2}.
+
+\bibitem[Cohen(1960)]{cohen1960}
+COHEN, J. A coefficient of agreement for nominal scales. \emph{Educational and Psychological Measurement}, v. 20, n. 1, p. 37--46, 1960. DOI: \url{https://doi.org/10.1177/001316446002000104}.
+
+\bibitem[Cohen(1968)]{cohen1968}
+COHEN, J. Weighted kappa: nominal scale agreement with provision for scaled disagreement or partial credit. \emph{Psychological Bulletin}, v. 70, n. 4, p. 213--220, 1968. DOI: \url{https://doi.org/10.1037/h0026256}.
+
+\bibitem[Conneau et al.(2018)]{conneau2018xnli}
+CONNEAU, A. et al. XNLI: evaluating cross-lingual sentence representations. In: \emph{Proceedings of EMNLP}. Brussels: ACL, 2018. p. 2475--2485. DOI: \url{https://doi.org/10.18653/v1/D18-1269}.
+
+\bibitem[Conneau et al.(2020)]{conneau2020xlmr}
+CONNEAU, A. et al. Unsupervised cross-lingual representation learning at scale. In: \emph{Proceedings of ACL}. Online: ACL, 2020. p. 8440--8451. DOI: \url{https://doi.org/10.18653/v1/2020.acl-main.747}.
+
+\bibitem[Dagan, Glickman e Magnini(2006)]{dagan2006}
+DAGAN, I.; GLICKMAN, O.; MAGNINI, B. The PASCAL recognising textual entailment challenge. In: QUIÑONERO-CANDELA, J. et al. (ed.). \emph{Machine Learning Challenges}. Berlin: Springer, 2006. p. 177--190. DOI: \url{https://doi.org/10.1007/11736790_9}.
+
+\bibitem[Davis e Goadrich(2006)]{davisgoadrich2006}
+DAVIS, J.; GOADRICH, M. The relationship between Precision-Recall and ROC curves. In: \emph{Proceedings of ICML}. New York: ACM, 2006. p. 233--240. DOI: \url{https://doi.org/10.1145/1143844.1143874}.
+
+\bibitem[Efron e Tibshirani(1993)]{efrontibshirani1993}
+EFRON, B.; TIBSHIRANI, R. J. \emph{An Introduction to the Bootstrap}. New York: Chapman \& Hall, 1993.
+
+\bibitem[Frank e Hall(2001)]{frankhall2001}
+FRANK, E.; HALL, M. A simple approach to ordinal classification. In: \emph{Machine Learning: ECML 2001}. Berlin: Springer, 2001. p. 145--156. DOI: \url{https://doi.org/10.1007/3-540-44795-4_13}.
+
+\bibitem[Gama et al.(2014)]{gama2014}
+GAMA, J. et al. A survey on concept drift adaptation. \emph{ACM Computing Surveys}, v. 46, n. 4, art. 44, 2014. DOI: \url{https://doi.org/10.1145/2523813}.
+
+\bibitem[Geifman e El-Yaniv(2017)]{geifmangulyaniv2017}
+GEIFMAN, Y.; EL-YANIV, R. Selective classification for deep neural networks. In: \emph{Advances in Neural Information Processing Systems 30}. 2017.
+
+\bibitem[Guo et al.(2017)]{guo2017calibration}
+GUO, C. et al. On calibration of modern neural networks. In: \emph{Proceedings of ICML}. PMLR, 2017. p. 1321--1330.
+
+\bibitem[Gururangan et al.(2018)]{gururangan2018}
+GURURANGAN, S. et al. Annotation artifacts in natural language inference data. In: \emph{Proceedings of NAACL-HLT}. New Orleans: ACL, 2018. p. 107--112. DOI: \url{https://doi.org/10.18653/v1/N18-2017}.
+
+\bibitem[Haslam(2006)]{haslam2006}
+HASLAM, N. Dehumanization: an integrative review. \emph{Personality and Social Psychology Review}, v. 10, n. 3, p. 252--264, 2006. DOI: \url{https://doi.org/10.1207/s15327957pspr1003_4}.
+
+\bibitem[Hayes e Krippendorff(2007)]{hayeskrippendorff2007}
+HAYES, A. F.; KRIPPENDORFF, K. Answering the call for a standard reliability measure for coding data. \emph{Communication Methods and Measures}, v. 1, n. 1, p. 77--89, 2007. DOI: \url{https://doi.org/10.1080/19312450709336664}.
+
+\bibitem[He, Gao e Chen(2021)]{he2021debertav3}
+HE, P.; GAO, J.; CHEN, W. DeBERTaV3: improving DeBERTa using ELECTRA-style pre-training with gradient-disentangled embedding sharing. \emph{arXiv preprint arXiv:2111.09543}, 2021. Disponível em: \url{https://arxiv.org/abs/2111.09543}.
+
+\bibitem[He e Garcia(2009)]{hegarcia2009}
+HE, H.; GARCIA, E. A. Learning from imbalanced data. \emph{IEEE Transactions on Knowledge and Data Engineering}, v. 21, n. 9, p. 1263--1284, 2009. DOI: \url{https://doi.org/10.1109/TKDE.2008.239}.
+
+\bibitem[Joeddav(s.d.)]{joeddavmodelcard}
+JOEDDAV. \emph{xlm-roberta-large-xnli: model card}. Hugging Face, s.d. Disponível em: \url{https://huggingface.co/joeddav/xlm-roberta-large-xnli}. Acesso em: 9 set. 2026.
+
+\bibitem[Laurer et al.(2024)]{laurer2024}
+LAURER, M. et al. Less annotating, more classifying: addressing the data scarcity issue of supervised machine learning with deep transfer learning and BERT-NLI. \emph{Political Analysis}, v. 32, n. 1, p. 84--100, 2024. DOI: \url{https://doi.org/10.1017/pan.2023.20}.
+
+\bibitem[Laurer(s.d.a)]{laurermdebertacard}
+LAURER, M. \emph{mDeBERTa-v3-base-xnli-multilingual-nli-2mil7: model card}. Hugging Face, s.d. Disponível em: \url{https://huggingface.co/MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7}. Acesso em: 9 set. 2026.
+
+\bibitem[Laurer(s.d.b)]{laurerminilmcard}
+LAURER, M. \emph{multilingual-MiniLMv2-L6-mnli-xnli: model card}. Hugging Face, s.d. Disponível em: \url{https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli}. Acesso em: 9 set. 2026.
+
+\bibitem[Matthews(1975)]{matthews1975}
+MATTHEWS, B. W. Comparison of the predicted and observed secondary structure of T4 phage lysozyme. \emph{Biochimica et Biophysica Acta}, v. 405, n. 2, p. 442--451, 1975. DOI: \url{https://doi.org/10.1016/0005-2795(75)90109-9}.
+
+\bibitem[Naik et al.(2018)]{naik2018}
+NAIK, A. et al. Stress test evaluation for natural language inference. In: \emph{Proceedings of COLING}. Santa Fe: ACL, 2018. p. 2340--2353.
+
+\bibitem[Pavlopoulos et al.(2020)]{pavlopoulos2020}
+PAVLOPOULOS, J. et al. Toxicity detection: does context really matter? In: \emph{Proceedings of ACL}. Online: ACL, 2020. p. 4296--4305. DOI: \url{https://doi.org/10.18653/v1/2020.acl-main.396}.
+
+\bibitem[Quiñonero-Candela et al.(2009)]{quinonerocandela2009}
+QUIÑONERO-CANDELA, J. et al. (ed.). \emph{Dataset Shift in Machine Learning}. Cambridge, MA: MIT Press, 2009. DOI: \url{https://doi.org/10.7551/mitpress/9780262170055.001.0001}.
+
+\bibitem[Ribeiro et al.(2020)]{ribeiro2020}
+RIBEIRO, M. T. et al. Beyond accuracy: behavioral testing of NLP models with CheckList. In: \emph{Proceedings of ACL}. Online: ACL, 2020. p. 4902--4912. DOI: \url{https://doi.org/10.18653/v1/2020.acl-main.442}.
+
+\bibitem[Röttger et al.(2021)]{rottger2021}
+RÖTTGER, P. et al. HateCheck: functional tests for hate speech detection models. In: \emph{Proceedings of ACL-IJCNLP}. Online: ACL, 2021. p. 41--58. DOI: \url{https://doi.org/10.18653/v1/2021.acl-long.4}.
+
+\bibitem[Sokolova e Lapalme(2009)]{sokolovalapalme2009}
+SOKOLOVA, M.; LAPALME, G. A systematic analysis of performance measures for classification tasks. \emph{Information Processing \& Management}, v. 45, n. 4, p. 427--437, 2009. DOI: \url{https://doi.org/10.1016/j.ipm.2009.03.002}.
+
+\bibitem[Ushio e Camacho-Collados(2024)]{ushio2024temporal}
+USHIO, A.; CAMACHO-COLLADOS, J. An evaluation of machine learning methods for temporal generalization in social media. In: \emph{Proceedings of WASSA}. Mexico City: ACL, 2024. p. 52--62.
+
+\bibitem[Williams, Nangia e Bowman(2018)]{williams2018}
+WILLIAMS, A.; NANGIA, N.; BOWMAN, S. R. A broad-coverage challenge corpus for sentence understanding through inference. In: \emph{Proceedings of NAACL-HLT}. New Orleans: ACL, 2018. p. 1112--1122. DOI: \url{https://doi.org/10.18653/v1/N18-1101}.
+
+\bibitem[Yin, Hay e Roth(2019)]{yin2019}
+YIN, W.; HAY, J.; ROTH, D. Benchmarking zero-shot text classification: datasets, evaluation and entailment approach. In: \emph{Proceedings of EMNLP-IJCNLP}. Hong Kong: ACL, 2019. p. 3914--3923. DOI: \url{https://doi.org/10.18653/v1/D19-1404}.
+
+\bibitem[Zadrozny e Elkan(2002)]{zadroznyelkan2002}
+ZADROZNY, B.; ELKAN, C. Transforming classifier scores into accurate multiclass probability estimates. In: \emph{Proceedings of KDD}. New York: ACM, 2002. p. 694--699. DOI: \url{https://doi.org/10.1145/775047.775151}.
+
+\end{thebibliography}
+

@@ -16,7 +16,7 @@ for (const envPath of [
 }
 if (!process.env.POSTGRES_URI) throw new Error("POSTGRES_URI não encontrada.");
 
-const baseUrl = process.env.REVIEW_APP_URL || "http://localhost:3001";
+const baseUrl = process.env.REVIEW_APP_URL || "http://localhost:3000";
 const username = `test.nli.${Date.now()}`;
 const password = "Teste@Nli123";
 const salt = randomBytes(16).toString("hex");
@@ -170,8 +170,18 @@ try {
   if (!metrics.body.nli || !Array.isArray(metrics.body.nli.layer3)) {
     throw new Error("Painel admin não retornou as métricas NLI.");
   }
+  if (
+    !metrics.body.nliModel ||
+    !Array.isArray(metrics.body.nliModel.toxicity) ||
+    !Array.isArray(metrics.body.nliModel.primaryDimensions) ||
+    !Array.isArray(metrics.body.nliModel.comparison?.matrix) ||
+    !Array.isArray(metrics.body.nliModel.platforms) ||
+    metrics.body.nliModel.processed <= 0
+  ) {
+    throw new Error("Painel admin não retornou as métricas do modelo NLI da Camada 3.");
+  }
 
-  console.log("Teste NLI concluído: fluxo integrado, N4, seleção múltipla, N1, histórico e métricas.");
+  console.log("Teste NLI concluído: fluxo integrado, N4, seleção múltipla, N1, histórico e métricas humanas/modelo.");
 } finally {
   if (reviewerId) {
     await client.query(

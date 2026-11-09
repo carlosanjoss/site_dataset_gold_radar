@@ -1,16 +1,18 @@
-import { config } from "dotenv";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 
 const root = process.cwd();
-for (const envPath of [
-  path.join(root, ".env.local"),
-  path.join(root, ".env"),
-  path.join(root, "..", "social_data_pipeline", ".env"),
-]) {
-  config({ path: envPath, override: false, quiet: true });
-  if (process.env.POSTGRES_URI) break;
+if (!process.env.POSTGRES_URI) {
+  const { config } = await import("dotenv");
+  for (const envPath of [
+    path.join(root, ".env.local"),
+    path.join(root, ".env"),
+    path.join(root, "..", "social_data_pipeline", ".env"),
+  ]) {
+    config({ path: envPath, override: false, quiet: true });
+    if (process.env.POSTGRES_URI) break;
+  }
 }
 
 if (!process.env.POSTGRES_URI) {

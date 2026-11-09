@@ -370,6 +370,9 @@ try {
   if (statsBody.reviewer.confirmed !== 1) {
     throw new Error("A confirmação não apareceu nas métricas.");
   }
+  if (statsBody.global !== null) {
+    throw new Error("O progresso geral foi exposto para um avaliador.");
+  }
 
   await insertUser({
     displayName: "Administrador temporário",
@@ -379,6 +382,16 @@ try {
     mustChangePassword: false,
   });
   const adminLogin = await login(adminUsername, adminPassword);
+  const adminStats = await fetch(`${baseUrl}/api/reviews/stats`, {
+    headers: { Cookie: adminLogin.cookie },
+  });
+  if (!adminStats.ok) {
+    throw new Error(`Métricas do admin falharam: ${await adminStats.text()}`);
+  }
+  const adminStatsBody = await adminStats.json();
+  if (!adminStatsBody.global || adminStatsBody.global.total <= 0) {
+    throw new Error("O progresso geral não apareceu para o administrador.");
+  }
   const createdUsername = `test.created.${suffix}`;
   const createUser = await fetch(`${baseUrl}/api/admin/users`, {
     method: "POST",

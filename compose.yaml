@@ -1,0 +1,104 @@
+name: radar-odio
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: radar-odio-site:latest
+    container_name: radar_site
+    restart: unless-stopped
+    environment:
+      POSTGRES_URI: ${POSTGRES_URI:?Defina POSTGRES_URI para o contêiner radar_postgres}
+      GEMMA_MODEL: ${GEMMA_MODEL:-gemma3:4b}
+      GEMMA_PROMPT_VERSION: ${GEMMA_PROMPT_VERSION:-gemma3_4b_structured_v2}
+      REVIEW_SESSION_DAYS: ${REVIEW_SESSION_DAYS:-7}
+      RUN_DB_MIGRATIONS: ${RUN_DB_MIGRATIONS:-true}
+      DB_WAIT_SECONDS: ${DB_WAIT_SECONDS:-300}
+    ports:
+      - 127.0.0.1:${APP_PORT:-3000}:3000
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - radar_internal
+
+  https:
+    image: caddy:2-alpine
+    container_name: radar_caddy
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:-configure-domain.example.com}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - radar_caddy_data:/data
+      - radar_caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - radar_internal
+
+  cloudflare:
+    image: cloudflare/cloudflared:latest
+    container_name: radar_cloudflare
+    profiles: ["cloudflare"]
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN:-configure-o-token-no-env-docker}
+    depends_on:
+      app:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - radar_internal
+
+  cloudflare-quick:
+    image: cloudflare/cloudflared:latest
+    container_name: radar_cloudflare_quick
+    profiles: ["quick-tunnel"]
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --url
+      - http://app:3000
+    depends_on:
+      app:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - radar_internal
+
+volumes:
+  radar_caddy_data:
+  radar_caddy_config:
+
+networks:
+  radar_internal:
+    external: true
+    name: radar_network
